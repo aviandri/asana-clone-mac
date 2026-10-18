@@ -168,6 +168,7 @@ final class MekariProjectAppTests: XCTestCase {
         // (A fresh shared editor has undo off until a cell sets it up, so only check it after use.)
         let shared = try XCTUnwrap(window.fieldEditor(true, for: nil) as? NSTextView)
 
+        XCTAssertTrue(field.cell is UndoFreeTextFieldCell)
         XCTAssertTrue(window.makeFirstResponder(field))
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         XCTAssertTrue(editor === field.privateEditor, "the add field edits in its own editor")
