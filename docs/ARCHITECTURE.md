@@ -355,6 +355,7 @@ public enum NavigationTarget: Hashable, Sendable { case task(id: String, project
   public private(set) var scope: WorkspaceScope?      // the current workspace's stores; nil = signed out or no workspace
   public private(set) var generation: Int             // bumps when a switch commits or lost access resets → `.task(id: generation)`
   public private(set) var notice: String?             // e.g. "Switched to Acme Pilot", "You no longer have access to X"
+  public private(set) var isSwitching: Bool           // a switch or lost-access recovery is queued/running: show progress, hold edits
   public let settings: ServerSettings
 
   // Workspaces
@@ -489,7 +490,7 @@ public func clearError()
 public let taskID: String
 public var task: TaskDetail? { get }                 // from TaskCache
 public private(set) var stories: [Story]             // oldest first; Comment.segments is pre-parsed
-public var canEdit: Bool { get }
+public var canEdit: Bool { get }                     // false until the project role is known (and if its lookup fails)
 public private(set) var phase: LoadState
 public private(set) var lastError: APIError?
 public let composer: CommentComposer
@@ -629,4 +630,14 @@ public func submit() async                           // personal task assigned t
      read-only. `UserSearch.lastError`.
    - `FakeMekariAPI.hold(_:)` / `release(_:all:newest:)` / `parkedCount(_:)` let tests order requests
      deterministically; a parked call that gets cancelled throws `CancellationError`.
+8. **Re-review additions (PR #4):**
+   - Lost-access recovery never clears the header. Until `adopt` swaps header and scope together, both
+     still name the lost workspace, so requests 404 instead of showing another workspace's data under
+     its label. If recovery fails, the notice stays and the next scoped request (focus) retries.
+   - `AppSession.isSwitching` is true while any switch or recovery is queued or running.
+   - `TaskDetailStore.canEdit` is false until the project role is known.
+   - `TaskCache.remove` leaves a tombstone, so later copies never bring a deleted task back.
+   - Renumbering: every PATCH is tried, the failed ones are retried once, and if any still fail the
+     project reloads and `lastError` says "Couldn't reorder; try again".
+   - My Tasks, Project and Inbox loads all use "apply unless something newer already landed".
 

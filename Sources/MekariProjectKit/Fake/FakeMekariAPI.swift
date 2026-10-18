@@ -26,7 +26,7 @@ public actor FakeMekariAPI: MekariAPI {
   private var lastWorkspace: [String: String] = [:]
   private var currentUserID: String?
   private var workspaceID: String?
-  private var failures: [FakeEndpoint: APIError] = [:]
+  private var failures: [FakeEndpoint: (error: APIError, remaining: Int)] = [:]
   private var latency: Duration = .zero
   private var holds: Set<FakeEndpoint> = []
   private var parked: [FakeEndpoint: [CheckedContinuation<Void, Never>]] = [:]
@@ -41,8 +41,9 @@ public actor FakeMekariAPI: MekariAPI {
 
   // MARK: - Test knobs
 
-  public func failNext(_ endpoint: FakeEndpoint, with error: APIError) {
-    failures[endpoint] = error
+  /// The next `times` calls to `endpoint` fail with `error`.
+  public func failNext(_ endpoint: FakeEndpoint, with error: APIError, times: Int = 1) {
+    failures[endpoint] = (error, max(1, times))
   }
 
   public func setLatency(_ duration: Duration) {
@@ -454,7 +455,8 @@ public actor FakeMekariAPI: MekariAPI {
       if Task.isCancelled { throw CancellationError() }
     }
     if latency > .zero { try? await Task.sleep(for: latency) }
-    if let failure = failures.removeValue(forKey: endpoint) {
+    if let (failure, remaining) = failures[endpoint] {
+      failures[endpoint] = remaining > 1 ? (failure, remaining - 1) : nil
       if failure.code == .unauthorized, endpoint != .login {
         currentUserID = nil
         eventSink.yield(.unauthorized)

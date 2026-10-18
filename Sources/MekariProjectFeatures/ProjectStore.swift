@@ -66,6 +66,7 @@ public final class ProjectStore {
       }
       phase = .loaded
     } catch {
+      guard mine > appliedVersion else { return } // a later load already landed
       recordFailure(error, phase: &phase, lastError: &lastError)
     }
   }
@@ -152,13 +153,28 @@ public final class ProjectStore {
         .map(\.id)
       let at = anchorID.flatMap { order.firstIndex(of: $0) } ?? order.count
       order.insert(taskID, at: at)
+      // N PATCHes aren't atomic: try every one, retry the failed ones once, and if any still fail,
+      // reload the server's order and say so (a half-applied order is never left on screen).
+      var failed: [(String, TaskChanges)] = []
+      var lastFailure: Error?
       for (id, position) in zip(order, Reorder.renumbered(count: order.count)) {
         let changes = TaskChanges(sectionId: id == taskID ? sectionPatch : nil, position: position)
-        if tasks[id]?.position != position || changes.sectionId != nil { try await tasks.update(id, changes) }
+        guard tasks[id]?.position != position || changes.sectionId != nil else { continue }
+        do { try await tasks.update(id, changes) } catch { failed.append((id, changes)); lastFailure = error }
       }
+      if !failed.isEmpty, !(lastFailure is CancellationError) {
+        var stillFailed = false
+        for (id, changes) in failed {
+          do { try await tasks.update(id, changes) } catch { stillFailed = true; lastFailure = error }
+        }
+        if !stillFailed { return }
+      }
+      if let lastFailure { throw lastFailure }
+    } catch is CancellationError {
     } catch {
-      recordFailure(error, lastError: &lastError)
-      if !(error is CancellationError) { await load() }
+      await load()
+      let apiError = error.asAPIError
+      lastError = APIError(code: apiError.code, status: apiError.status, message: "Couldn't reorder; try again", issues: apiError.issues)
     }
   }
 

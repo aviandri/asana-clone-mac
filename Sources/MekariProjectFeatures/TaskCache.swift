@@ -20,6 +20,8 @@ public final class TaskCache {
   @ObservationIgnored private var confirmed: [String: TaskItem] = [:]
   @ObservationIgnored private var confirmedDetails: [String: TaskDetail] = [:]
   @ObservationIgnored private var pending: [String: [PendingEdit]] = [:]
+  /// Deleted tasks: later copies (a slow list load) never bring them back.
+  @ObservationIgnored private var deleted: Set<String> = []
   @ObservationIgnored private var nextEdit = 0
 
   private struct PendingEdit {
@@ -49,16 +51,22 @@ public final class TaskCache {
   }
 
   public func upsert(_ detail: TaskDetail) {
+    if deleted.contains(detail.id) { return }
     if let current = confirmedDetails[detail.id], current.updatedAt > detail.updatedAt { return }
     confirmedDetails[detail.id] = detail
     var touched: Set<String> = [detail.id]
     _ = accept(detail.task)
     for subtask in detail.subtasks where accept(subtask) { touched.insert(subtask.id) }
+    if var stored = confirmedDetails[detail.id] {
+      stored.subtasks.removeAll { deleted.contains($0.id) }
+      confirmedDetails[detail.id] = stored
+    }
     if let parentID = detail.parentId { touched.insert(parentID) }
     touched.forEach(recompute)
   }
 
   public func remove(_ id: String) {
+    deleted.insert(id)
     let parentID = tasks[id]?.parentId
     tasks[id] = nil
     details[id] = nil
@@ -101,6 +109,7 @@ public final class TaskCache {
 
   /// Takes a server copy unless we already hold a newer one.
   private func accept(_ item: TaskItem) -> Bool {
+    if deleted.contains(item.id) { return false }
     if let current = confirmed[item.id], current.updatedAt > item.updatedAt { return false }
     confirmed[item.id] = item
     return true

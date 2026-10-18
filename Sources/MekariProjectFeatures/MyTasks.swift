@@ -81,6 +81,7 @@ public final class MyTasksStore {
   private var ids: [String] = []
   @ObservationIgnored private var reload: Task<Void, Never>?
   @ObservationIgnored private var loadVersion = 0
+  @ObservationIgnored private var appliedVersion = 0
 
   public init(api: any MekariAPI, tasks: TaskCache, me: UserSummary, calendar: Calendar = .current, now: @escaping () -> Date = Date.init) {
     self.api = api
@@ -126,13 +127,15 @@ public final class MyTasksStore {
     let mine = loadVersion
     do {
       let list = try await api.myTasks(includeCompleted: showCompleted)
-      guard mine == loadVersion else { return } // a newer refresh (e.g. the toggle) won
+      // Applied unless a later refresh already landed (e.g. a quick second toggle answered first).
+      guard mine > appliedVersion else { return }
+      appliedVersion = mine
       tasks.upsert(list)
       // Keep tasks completed in this session visible (with "show completed" off they're filtered anyway).
       ids = list.map(\.id)
       phase = .loaded
     } catch {
-      guard mine == loadVersion else { return }
+      guard mine > appliedVersion else { return }
       recordFailure(error, phase: &phase, lastError: &lastError)
     }
   }
@@ -159,6 +162,9 @@ public final class MyTasksStore {
   }
 
   public func clearError() { lastError = nil }
+
+  /// The ids from the last applied load (tests).
+  var loadedTaskIDs: [String] { ids }
 
   /// Another store created a task (quick add); show it without a reload.
   func didCreate(_ detail: TaskDetail) {
