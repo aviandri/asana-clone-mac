@@ -271,7 +271,7 @@ final class TaskDetailStoreTests: XCTestCase {
     composer.draft = "Thanks @bo"
     XCTAssertEqual(composer.mentionQuery, "bo")
     await clock.advance(by: .milliseconds(250))
-    XCTAssertEqual(composer.users.results.map(\.name), ["Bob Smith"])
+    XCTAssertEqual(composer.users.results.map(\.user.name), ["Bob Smith"])
     composer.insertMention(composer.users.results[0])
     XCTAssertEqual(composer.draft, "Thanks @[Bob Smith](\(DemoIDs.bob)) ")
     XCTAssertNil(composer.mentionQuery)

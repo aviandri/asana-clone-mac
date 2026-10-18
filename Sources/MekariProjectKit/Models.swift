@@ -174,6 +174,15 @@ public struct UserSummary: Codable, Sendable, Hashable, Identifiable {
   }
 }
 
+/// The key path type for the `@dynamicMemberLookup` wrappers below. Swift 6 wants `& Sendable` (key
+/// paths cross isolation under strict concurrency), but Swift 5.10 (Xcode 15.4) rejects a composition
+/// as a dynamic-member parameter, so 5.10 gets a plain `KeyPath`.
+#if compiler(>=6.0)
+public typealias MemberKeyPath<Root, Value> = KeyPath<Root, Value> & Sendable
+#else
+public typealias MemberKeyPath<Root, Value> = KeyPath<Root, Value>
+#endif
+
 /// A `GET /users` entry: the person plus their role in the current workspace (W8). Flat in JSON.
 @dynamicMemberLookup
 public struct PickableUser: Sendable, Hashable, Identifiable {
@@ -187,7 +196,7 @@ public struct PickableUser: Sendable, Hashable, Identifiable {
 
   public var id: String { user.id }
   public var isGuest: Bool { role == .guest }
-  public subscript<T>(dynamicMember keyPath: KeyPath<UserSummary, T> & Sendable) -> T { user[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: MemberKeyPath<UserSummary, T>) -> T { user[keyPath: keyPath] }
 }
 
 extension PickableUser: Codable {
@@ -266,7 +275,7 @@ public struct Me: Sendable, Hashable {
     self.workspaces = workspaces
   }
 
-  public subscript<T>(dynamicMember keyPath: KeyPath<User, T> & Sendable) -> T { user[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: MemberKeyPath<User, T>) -> T { user[keyPath: keyPath] }
 }
 
 extension Me: Codable {
@@ -388,7 +397,7 @@ public struct ProjectDetail: Sendable, Hashable, Identifiable {
   }
 
   public var id: String { project.id }
-  public subscript<T>(dynamicMember keyPath: KeyPath<Project, T> & Sendable) -> T { project[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: MemberKeyPath<Project, T>) -> T { project[keyPath: keyPath] }
 }
 
 extension ProjectDetail: Codable {
@@ -522,7 +531,7 @@ public struct TaskDetail: Sendable, Hashable, Identifiable {
   }
 
   public var id: String { task.id }
-  public subscript<T>(dynamicMember keyPath: KeyPath<TaskItem, T> & Sendable) -> T { task[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: MemberKeyPath<TaskItem, T>) -> T { task[keyPath: keyPath] }
 }
 
 extension TaskDetail: Codable {
