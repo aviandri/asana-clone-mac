@@ -1,5 +1,6 @@
 import Foundation
 import MekariProjectKit
+import XCTest
 @testable import MekariProjectFeatures
 
 /// A clock that only moves when the test calls `advance(by:)`.
@@ -114,4 +115,15 @@ func signedInSession(_ fake: FakeMekariAPI, clock: TestClock = TestClock()) asyn
   await session.start()
   await settle()
   return session
+}
+
+/// Yields until `condition` holds (bounded; fails the test instead of hanging).
+@MainActor
+func waitUntil(_ what: String = "condition", file: StaticString = #filePath, line: UInt = #line,
+               _ condition: @MainActor () async -> Bool) async {
+  for _ in 0..<2_000 {
+    if await condition() { return }
+    await Task.yield()
+  }
+  XCTFail("timed out waiting for \(what)", file: file, line: line)
 }

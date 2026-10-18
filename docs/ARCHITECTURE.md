@@ -615,4 +615,18 @@ public func submit() async                           // personal task assigned t
    - `LocalNotice` is nested: `NotificationPoller.LocalNotice` (also `Identifiable`).
    - The scaffold's `AppModel` (and Kit's `ServerConfiguration`) stay until the app shell (PR 4) moves to
      `AppSession`; PR 4 deletes them.
+7. **Concurrency rules (PR #4 review):**
+   - `TaskCache` shows *server-confirmed + edits in flight, replayed in order*. A failed edit drops only
+     itself. Server copies older than the confirmed one (`updatedAt`) are ignored, so a slow list load
+     can't undo a drag. `hasPendingEdits(id)`.
+   - Workspace switches and lost-access recovery run one at a time. A switch superseded before it
+     starts is skipped before its POST, so the app and the server's `lastWorkspaceId` both end on the
+     newest choice. Recovery never cancels a user's switch.
+   - Loads drop a response only when something newer has already been applied. `CancellationError` is
+     never shown as an error, and a cancelled first load goes back to `.idle`.
+   - Renumbering fetches the whole section (completed tasks too) and reloads the project if it fails.
+   - The composer keeps text typed while a comment is sending. A failed project-role lookup means
+     read-only. `UserSearch.lastError`.
+   - `FakeMekariAPI.hold(_:)` / `release(_:all:newest:)` / `parkedCount(_:)` let tests order requests
+     deterministically; a parked call that gets cancelled throws `CancellationError`.
 

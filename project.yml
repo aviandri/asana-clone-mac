@@ -67,6 +67,18 @@ targets:
         # XcodeGen derives the host from the target name; the product is "Mekari Project.app".
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Mekari Project.app/Contents/MacOS/Mekari Project"
         BUNDLE_LOADER: "$(TEST_HOST)"
+  MekariProjectUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - UITests
+    dependencies:
+      - target: MekariProjectApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mekari.project.uitests
+        TEST_TARGET_NAME: MekariProjectApp
 schemes:
   MekariProjectApp:
     build:
@@ -75,5 +87,6 @@ schemes:
     test:
       targets:
         - MekariProjectAppTests
+        - MekariProjectUITests
     archive:
       config: Release

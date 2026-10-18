@@ -56,3 +56,24 @@ extension Error {
     (self as? APIError) ?? APIError(code: .unknown("client"), message: localizedDescription)
   }
 }
+
+/// Records a failed load: cancellation (a view went away, the scope was replaced) is not an error,
+/// and a cancelled first load goes back to `.idle`.
+@MainActor
+func recordFailure(_ error: Error, phase: inout LoadState, lastError: inout APIError?) {
+  if error is CancellationError {
+    if phase == .loading { phase = .idle }
+    return
+  }
+  let apiError = error.asAPIError
+  phase = .failed(apiError)
+  lastError = apiError
+}
+
+/// Records a failed action; cancellation is not an error.
+@MainActor
+func recordFailure(_ error: Error, lastError: inout APIError?) {
+  guard !(error is CancellationError) else { return }
+  lastError = error.asAPIError
+}
+
