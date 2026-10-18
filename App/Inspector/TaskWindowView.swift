@@ -12,6 +12,7 @@ struct TaskWindowRef: Codable, Hashable {
 
 /// A task in its own window (⌘O / double-click). Reuses the scope's cached TaskDetailStore, so edits
 /// show up in the main window too.
+@MainActor
 struct TaskWindowView: View {
     let session: AppSession
     @Binding var ref: TaskWindowRef?
@@ -29,6 +30,7 @@ struct TaskWindowView: View {
                 // ⌘O / ⇧⌘O act on this window's task.
                 .focusedSceneValue(\.selectedTaskID, ref.taskID)
                 .focusedSceneValue(\.currentProjectID, scope.tasks[ref.taskID]?.projectId)
+                .focusedSceneValue(\.browserLink, BrowserLinks.url(session: session, taskID: ref.taskID, projectID: scope.tasks[ref.taskID]?.projectId))
                 .navigationTitle(scope.tasks[ref.taskID]?.title ?? "Task")
             } else if let ref, session.scope != nil {
                 OtherWorkspaceView(session: session, workspaceID: ref.workspaceID)
@@ -41,6 +43,7 @@ struct TaskWindowView: View {
 }
 
 /// Shown in a task window after the app switched away from the task's workspace.
+@MainActor
 private struct OtherWorkspaceView: View {
     let session: AppSession
     let workspaceID: String

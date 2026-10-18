@@ -9,6 +9,7 @@ enum SettingsKey {
 }
 
 /// ⌘, (SPEC-MAC §5): server (sign out to change), menu bar, notifications, launch at login.
+@MainActor
 struct SettingsView: View {
     let session: AppSession
 
@@ -24,6 +25,7 @@ struct SettingsView: View {
     }
 }
 
+@MainActor
 private struct GeneralSettings: View {
     @AppStorage(SettingsKey.showInMenuBar) private var showInMenuBar = true
     @AppStorage(SettingsKey.notificationsEnabled) private var notificationsEnabled = true
@@ -79,6 +81,7 @@ private struct GeneralSettings: View {
     }
 }
 
+@MainActor
 private struct AccountSettings: View {
     let session: AppSession
 

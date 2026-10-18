@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Sign-in, the main split view, or "no workspace", depending on the session.
+@MainActor
 struct RootView: View {
     let session: AppSession
     @Bindable var router: AppRouter
@@ -35,6 +36,13 @@ struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: session.notice)
+        .overlay(alignment: .topTrailing) {
+            if let opened = router.uiTestOpenedURL {
+                Text(opened)
+                    .font(.caption2)
+                    .accessibilityIdentifier("uitest.openedURL")
+            }
+        }
         .alert("Can't Open", isPresented: Binding(get: { router.alert != nil }, set: { if !$0 { router.alert = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -52,6 +60,7 @@ struct RootView: View {
 }
 
 /// Signed in but not a member of any workspace: joining or creating one happens on the web (SPEC-MAC §1).
+@MainActor
 struct NoWorkspaceView: View {
     let session: AppSession
     @Environment(\.openURL) private var openURL

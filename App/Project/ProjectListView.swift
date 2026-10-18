@@ -4,6 +4,7 @@ import SwiftUI
 
 /// List view: sections with their tasks, inline add per section. Drag a row onto another row to put it
 /// before that row (any section), or onto a section's "Add task" row to put it at the end.
+@MainActor
 struct ProjectListView: View {
     let scope: WorkspaceScope
     let store: ProjectStore
@@ -78,6 +79,7 @@ struct ProjectListView: View {
 }
 
 /// "Add task" inline field (Return adds; stays focused for the next one).
+@MainActor
 struct AddTaskRow: View {
     var placeholder = "Add task"
     let onAdd: (String) -> Void

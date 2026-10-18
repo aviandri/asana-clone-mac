@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Notifications, newest first; unread in bold. A click marks it read and opens the task (SPEC-MAC §5).
+@MainActor
 struct InboxView: View {
     let session: AppSession
     let inbox: InboxStore
@@ -57,6 +58,7 @@ struct InboxView: View {
     }
 }
 
+@MainActor
 private struct InboxRow: View {
     let notification: InboxNotification
 

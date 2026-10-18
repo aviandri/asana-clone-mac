@@ -4,6 +4,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Workspace menu, My Tasks, Inbox (unread badge), and the workspace's projects (SPEC-MAC §5).
+@MainActor
 struct SidebarView: View {
     let session: AppSession
     let scope: WorkspaceScope
@@ -62,52 +63,66 @@ struct SidebarView: View {
     }
 }
 
-/// The workspace switcher at the top of the sidebar. ⌘1…⌘9 live in the Workspace menu (AppCommands).
+/// The workspace switcher at the top of the sidebar: colour tile + name (SPEC-MAC §5). ⌘1…⌘9 live in
+/// the Workspace menu (AppCommands).
+@MainActor
 struct WorkspaceMenu: View {
     let session: AppSession
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
-        Menu {
-            ForEach(session.all) { workspace in
-                Toggle(isOn: Binding(
-                    get: { workspace.id == session.current?.id },
-                    set: { on in if on { Task { await session.switchWorkspace(to: workspace.id) } } }
-                )) {
-                    Text(workspace.isGuest ? "\(workspace.name) (Guest)" : workspace.name)
+        HStack(spacing: 6) {
+            Menu {
+                ForEach(session.all) { workspace in
+                    Toggle(isOn: Binding(
+                        get: { workspace.id == session.current?.id },
+                        set: { on in if on { Task { await session.switchWorkspace(to: workspace.id) } } }
+                    )) {
+                        Text(workspace.isGuest ? "\(workspace.name) (Guest)" : workspace.name)
+                    }
                 }
-            }
-            if session.isAdmin {
+                if session.isAdmin {
+                    Divider()
+                    Button("Open Workspace Settings in Browser") {
+                        if let url = session.webURL(path: "/workspace/settings") { NSWorkspace.shared.open(url) }
+                    }
+                }
                 Divider()
-                Button("Open Workspace Settings in Browser") {
-                    if let url = session.webURL(path: "/workspace/settings") { NSWorkspace.shared.open(url) }
-                }
-            }
-            Divider()
-            Button("Sign Out") { Task { await session.signOut() } }
-        } label: {
-            HStack(spacing: 8) {
+                Button("Sign Out") { Task { await session.signOut() } }
+            } label: {
+                // A macOS menu button keeps only one image and one text of its label (a custom HStack
+                // came out as the tile's initial alone), so the tile goes in as a rendered image.
                 if let current = session.current {
-                    WorkspaceTile(name: current.name, color: current.color)
-                    Text(current.name)
-                        .font(.headline)
-                        .lineLimit(1)
-                    if current.isGuest { GuestPill() }
-                }
-                Spacer(minLength: 0)
-                if session.isSwitching {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Switching workspace")
+                    Label {
+                        Text(current.isGuest ? "\(current.name) · Guest" : current.name)
+                    } icon: {
+                        tileImage(current)
+                    }
+                    .labelStyle(.titleAndIcon)
+                } else {
+                    Text("Workspace")
                 }
             }
-            .contentShape(Rectangle())
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.visible)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Workspace menu")
+            .accessibilityValue(session.isSwitching ? "Switching…" : (session.current?.name ?? ""))
+            .accessibilityIdentifier("sidebar.workspaceMenu")
+            .help("Switch workspace (⌘1…⌘9)")
+
+            if session.isSwitching {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Switching workspace")
+            }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.visible)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityLabel("Workspace menu")
-        .accessibilityValue(session.isSwitching ? "Switching…" : (session.current?.name ?? ""))
-        .accessibilityIdentifier("sidebar.workspaceMenu")
-        .help("Switch workspace (⌘1…⌘9)")
+    }
+
+    private func tileImage(_ workspace: Workspace) -> Image {
+        let renderer = ImageRenderer(content: WorkspaceTile(name: workspace.name, color: workspace.color, size: 18))
+        renderer.scale = displayScale
+        guard let image = renderer.nsImage else { return Image(systemName: "square.fill") }
+        return Image(nsImage: image)
     }
 }

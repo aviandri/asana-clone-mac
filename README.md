@@ -44,6 +44,8 @@ sign-in, so it's at most one prompt per update. Denying it just means signing in
 away once builds are signed with a team ID (data-protection keychain).
 
 ## Developing on a Mac
+Needs macOS 14 and Xcode 15.4 or later (Swift 5.10). `project.yml` pins `projectFormat: xcode15_3`
+so the generated project opens in Xcode 15.4; CI checks both Xcode 15.4 and 16.
 ```sh
 brew install xcodegen
 xcodegen generate && open MekariProject.xcodeproj   # scheme: MekariProjectApp
@@ -61,24 +63,35 @@ NODE_PATH=/tmp/resvg/node_modules node scripts/make-app-icon.mjs
 | Job | Runs |
 |---|---|
 | `linux-kit` | `swift build` + `swift test` in the `swift:6.0` container |
+| `linux-kit-swift510` | the same in the `swift:5.10` container (Xcode 15.4's compiler, the oldest we support) |
 | `linux-contract` | BE `main` (Postgres service, migrate, full seed) + `swift test --filter ContractTests` |
 | `macos-app` | `macos-15`: `swift test`, XcodeGen, `xcodebuild build test` (unsigned), universal Release archive, ad-hoc signed, launch smoke (5 s with `-UITestFakeAPI`), zipped; uploaded as an artifact on pushes to `main` and tags |
+| `macos-xcode15` | `macos-14` + Xcode 15.4: XcodeGen, `xcodebuild build test` (unsigned); no archive |
 | `release` | `v*` tags only: GitHub Release with the zip and generated notes |
 
 ## Installing (unsigned builds)
 Releases are universal (Apple Silicon + Intel) and need macOS 14 Sonoma or later. They're ad-hoc
-signed but not notarized, so macOS asks for confirmation the first time.
+signed but not notarized, so macOS blocks the first launch until you allow it.
 
 1. Download `MekariProject-<version>.zip` from the
    [latest release](https://github.com/aviandri/asana-clone-mac/releases/latest).
    Builds of `main` are also attached to each CI run as the `MekariProject-<sha>` artifact.
-2. Unzip it (double-click) and move **Mekari Project.app** to **Applications**.
-3. The first time, **right-click the app → Open**, then confirm **Open**. Or clear the quarantine
-   flag from Terminal:
+2. Unzip it (double-click) and **move Mekari Project.app to Applications first**, then launch it
+   from there. A copy started from Downloads runs from a randomized read-only location (App
+   Translocation).
+3. If macOS says *"Mekari Project" can't be opened because Apple cannot check it for malicious
+   software* (only **Show in Finder** / **OK**), click OK, then open **System Settings → Privacy &
+   Security**, scroll to *"Mekari Project" was blocked…*, click **Open Anyway** and confirm.
+   On macOS 14, **right-click the app → Open** → **Open** also works. Or clear the quarantine flag
+   from Terminal:
    ```sh
    xattr -dr com.apple.quarantine "/Applications/Mekari Project.app"
    ```
-4. Sign in with your Mekari Project server URL, email and password.
+4. Delete any copy left in Downloads (the zip and the unzipped app), so that `open` and Spotlight
+   don't start the quarantined copy.
+5. Sign in with your Mekari Project server URL, email and password.
+
+The proper fix is Developer ID signing + notarization, which needs an Apple Developer account.
 
 ## Releasing
 Push a tag `vMAJOR.MINOR.PATCH` (or `vMAJOR.MINOR.PATCH-rc1` for a prerelease) on `main`; only the

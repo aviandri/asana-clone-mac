@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Comments and activity, oldest first (`GET /tasks/:id/stories`).
+@MainActor
 struct StoriesSection: View {
     let stories: [Story]
     let me: UserSummary
@@ -32,6 +33,7 @@ struct StoriesSection: View {
     }
 }
 
+@MainActor
 struct CommentRow: View {
     let comment: Comment
 
@@ -64,8 +66,7 @@ enum CommentText {
         for segment in segments {
             switch segment {
             case .text(let text):
-                let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                out += (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+                out += Formatting.markdown(text)
             case .mention(let name, _):
                 var token = AttributedString("@\(name)")
                 token.foregroundColor = .accentColor
@@ -77,6 +78,7 @@ enum CommentText {
     }
 }
 
+@MainActor
 struct ActivityRow: View {
     let activity: Activity
 
@@ -124,6 +126,7 @@ struct ActivityRow: View {
 }
 
 /// Composer pinned under the stories: ⌘↩ sends; a trailing "@word" offers people to mention.
+@MainActor
 struct CommentComposerView: View {
     @Bindable var composer: CommentComposer
 

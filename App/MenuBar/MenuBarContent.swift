@@ -4,6 +4,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// The menu bar icon: unread count when there is something new.
+@MainActor
 struct MenuBarLabel: View {
     let session: AppSession
     let router: AppRouter
@@ -23,6 +24,7 @@ struct MenuBarLabel: View {
 
 /// MenuBarExtra (window style, SPEC-MAC §5): overdue + due today with inline complete, quick add,
 /// and "Open Mekari Project".
+@MainActor
 struct MenuBarContent: View {
     let session: AppSession
     let router: AppRouter
@@ -77,6 +79,7 @@ struct MenuBarContent: View {
 }
 
 /// Title + optional due date; creates a personal task assigned to me.
+@MainActor
 private struct QuickAddView: View {
     @Bindable var model: QuickAddModel
     @FocusState private var focused: Bool
@@ -117,6 +120,7 @@ private struct QuickAddView: View {
 }
 
 /// Overdue and due-today tasks (MyTasksStore.dueSoon), completable inline.
+@MainActor
 private struct DueSoonList: View {
     let scope: WorkspaceScope
     let onOpen: (String) -> Void

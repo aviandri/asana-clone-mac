@@ -1,5 +1,6 @@
 import MekariProjectFeatures
 import MekariProjectKit
+import Observation
 import XCTest
 @testable import MekariProjectApp
 
@@ -85,6 +86,61 @@ final class MekariProjectAppTests: XCTestCase {
         XCTAssertNil(router.selectedTask)
         router.handle(.noAccess)
         XCTAssertNotNil(router.alert)
+    }
+
+    /// QA F3: a List writing back the selection it already has must not notify observers, or SwiftUI
+    /// updates the selection again in the same frame.
+    @MainActor
+    func testUnchangedSelectionWritesDoNotNotify() {
+        let router = AppRouter()
+        router.selectTask("t1")
+        let changes = ChangeCounter()
+        withObservationTracking {
+            _ = router.selectedTask
+            _ = router.item
+            _ = router.showSearch
+        } onChange: { MainActor.assumeIsolated { changes.count += 1 } }
+        router.selectTask("t1")
+        router.select(.myTasks)
+        router.open(.task(id: "t1", projectID: nil))
+        XCTAssertEqual(changes.count, 0)
+        router.selectTask("t2")
+        XCTAssertEqual(changes.count, 1)
+        XCTAssertEqual(router.selectedTask, "t2")
+    }
+
+    /// rc1 QA S1: the ⇧⌘O command path. The focused window's link wins; with no window focused it
+    /// falls back to My Tasks in the current workspace; with no workspace it opens nothing.
+    @MainActor
+    func testOpenInBrowserCommandOpensTheFocusedLinkOrFallsBack() async throws {
+        let original = OpenInBrowser.open
+        defer { OpenInBrowser.open = original }
+        var opened: [URL] = []
+        OpenInBrowser.open = { opened.append($0) }
+
+        let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI"])
+        await session.start()
+        let focused = try XCTUnwrap(BrowserLinks.url(session: session, taskID: nil, projectID: DemoIDs.boardProject))
+        XCTAssertTrue(OpenInBrowser.perform(focused: focused, session: session))
+        XCTAssertTrue(OpenInBrowser.perform(focused: nil, session: session))
+        XCTAssertEqual(opened.count, 2)
+        XCTAssertEqual(opened.first, focused)
+        let fallback = try XCTUnwrap(opened.last?.absoluteString)
+        XCTAssertTrue(fallback.contains("/my-tasks") && fallback.contains("workspace=\(DemoIDs.mekari)"), fallback)
+
+        let signedOut = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI", "-UITestSignedOut"])
+        await signedOut.start()
+        XCTAssertNil(OpenInBrowser.target(focused: nil, session: signedOut), "the menu item is disabled")
+        XCTAssertFalse(OpenInBrowser.perform(focused: nil, session: signedOut))
+        XCTAssertEqual(opened.count, 2)
+    }
+
+    /// QA F4: descriptions (and comments) render inline markdown, not literal asterisks.
+    func testDescriptionMarkdownRendersInline() {
+        let seeded = Formatting.markdown("After signing in, users land on **/** instead of the page they came from.")
+        XCTAssertEqual(String(seeded.characters), "After signing in, users land on / instead of the page they came from.")
+        XCTAssertEqual(String(Formatting.markdown("line one\nline two").characters), "line one\nline two", "line breaks are kept")
+        XCTAssertEqual(String(Formatting.markdown("# not a heading").characters), "# not a heading", "inline only")
     }
 
     @MainActor
@@ -245,4 +301,9 @@ final class MekariProjectAppTests: XCTestCase {
         let personal = try XCTUnwrap(BrowserLinks.url(session: session, taskID: missing, projectID: nil)?.absoluteString)
         XCTAssertTrue(personal.contains("/my-tasks") && personal.contains("task=\(missing)"), personal)
     }
+}
+
+@MainActor
+private final class ChangeCounter {
+    var count = 0
 }

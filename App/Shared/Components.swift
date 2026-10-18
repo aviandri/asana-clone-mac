@@ -38,6 +38,7 @@ enum Initials {
 }
 
 /// Round avatar with initials on the user's colour.
+@MainActor
 struct Avatar: View {
     let user: UserSummary?
     var size: CGFloat = 20
@@ -62,6 +63,7 @@ struct Avatar: View {
 }
 
 /// Square workspace tile with its initial (Slack-style, like the web).
+@MainActor
 struct WorkspaceTile: View {
     let name: String
     let color: String
@@ -78,6 +80,7 @@ struct WorkspaceTile: View {
 }
 
 /// "Guest" capsule (SPEC-MAC §5; pickers per W8).
+@MainActor
 struct GuestPill: View {
     var body: some View {
         Text("Guest")
@@ -91,6 +94,7 @@ struct GuestPill: View {
 }
 
 /// Inline, dismissible error from a store's `lastError`.
+@MainActor
 struct ErrorBanner: View {
     let error: APIError?
     let dismiss: () -> Void
@@ -114,6 +118,7 @@ struct ErrorBanner: View {
 }
 
 /// A transient app-level notice ("Switched to Acme Pilot"), shown at the bottom of the window.
+@MainActor
 struct NoticeToast: View {
     let text: String
 

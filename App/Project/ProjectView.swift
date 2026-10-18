@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// One project: List or Board (SPEC-MAC §5), starting on its default view. Read-only for COMMENTERs.
+@MainActor
 struct ProjectView: View {
     let session: AppSession
     let scope: WorkspaceScope
@@ -85,6 +86,7 @@ struct ProjectView: View {
 }
 
 /// Drag a task by its id (SPEC-MAC: drag payloads are task-id strings); off when read-only.
+@MainActor
 struct TaskDragModifier: ViewModifier {
     let taskID: String
     let title: String
@@ -103,6 +105,7 @@ struct TaskDragModifier: ViewModifier {
     }
 }
 
+@MainActor
 extension View {
     func taskDrag(_ task: TaskItem, enabled: Bool) -> some View {
         modifier(TaskDragModifier(taskID: task.id, title: task.title, enabled: enabled))
@@ -133,6 +136,7 @@ enum DropRules {
 }
 
 /// The section header's rename flow (context menu → alert).
+@MainActor
 struct SectionRenameModifier: ViewModifier {
     let store: ProjectStore
     let section: MekariProjectKit.Section?

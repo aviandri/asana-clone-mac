@@ -4,6 +4,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Server URL, email, password (SPEC-MAC §5). Errors inline; invites are accepted on the web.
+@MainActor
 struct SignInView: View {
     let session: AppSession
 

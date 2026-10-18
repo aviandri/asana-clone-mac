@@ -5,6 +5,7 @@ import SwiftUI
 
 /// ⌘K: tasks, projects and people (SPEC-MAC §5). Min 2 characters and the 250 ms debounce live in
 /// SearchStore. ↑/↓ move, Return opens, Escape closes. People open a mail draft (like the web).
+@MainActor
 struct SearchPalette: View {
     @Bindable var search: SearchStore
     let onOpen: (NavigationTarget) -> Void
@@ -155,6 +156,7 @@ struct PaletteItem: Identifiable, Equatable {
     }
 }
 
+@MainActor
 private struct PaletteRow: View {
     let item: PaletteItem
     let isSelected: Bool

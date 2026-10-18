@@ -22,6 +22,12 @@ final class AppFlowUITests: XCTestCase {
         app.descendants(matching: .any)[identifier].firstMatch
     }
 
+    /// `XCUIElement.waitForNonExistence(timeout:)` is Xcode 16+; this works on Xcode 15.4 too.
+    private func waitForNonExistence(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
     @MainActor
     func testOpeningAProjectFromTheSidebarShowsItsTasks() {
         let app = launch()
@@ -73,12 +79,60 @@ final class AppFlowUITests: XCTestCase {
         let app = launch()
         app.typeKey("w", modifierFlags: .command) // close the main window; the menu bar keeps the app alive
         let sidebar = element(app, "sidebar.myTasks")
-        XCTAssertTrue(sidebar.waitForNonExistence(timeout: 5), "main window didn't close")
+        XCTAssertTrue(waitForNonExistence(of: sidebar, timeout: 5), "main window didn't close")
 
         app.open(try XCTUnwrap(URL(string: "mekariproject://task/\(fixLogin)")))
         XCTAssertTrue(sidebar.waitForExistence(timeout: 10), "main window didn't reopen for the link")
         XCTAssertTrue(element(app, "task.inspector").waitForExistence(timeout: 10), "linked task not opened")
         XCTAssertFalse(app.staticTexts["Can't Open"].exists, "link reported no access")
         XCTAssertEqual(app.windows.count, 1, "the link opened an extra (Task) window")
+    }
+
+    /// rc1 QA S1: a CommandGroup anchored to a placement the app doesn't have is dropped silently,
+    /// so check every command is actually in its menu.
+    @MainActor
+    func testEveryCommandIsInItsMenu() {
+        let app = launch()
+        let expected = [
+            ("File", "Open Task in New Window"),
+            ("File", "Open in Browser"),
+            ("Edit", "Search…"),
+            ("View", "Refresh"),
+            ("Workspace", "Mekari"),
+        ]
+        for (menu, item) in expected {
+            XCTAssertTrue(app.menuBars.menuBarItems[menu].menuItems[item].exists, "\(menu) → \(item) missing")
+        }
+        XCTAssertTrue(app.menuBars.menuItems["Sign Out"].exists, "app menu → Sign Out missing")
+    }
+
+    /// rc1 QA S1: ⇧⌘O through the real menu (Commands), for My Tasks and then a selected project.
+    @MainActor
+    func testOpenInBrowserShortcutOpensTheCurrentPage() {
+        let app = launch()
+        let file = app.menuBars.menuBarItems["File"]
+        let item = file.menuItems["Open in Browser"]
+        XCTAssertTrue(item.exists, "File → Open in Browser missing")
+        XCTAssertTrue(item.isEnabled, "File → Open in Browser is disabled")
+        let opened = element(app, "uitest.openedURL")
+        app.typeKey("o", modifierFlags: [.command, .shift])
+        if !opened.waitForExistence(timeout: 5) {
+            // Tell "the shortcut isn't delivered" apart from "the command does nothing".
+            file.click()
+            item.click()
+            XCTAssertTrue(opened.waitForExistence(timeout: 5), "File → Open in Browser did nothing (clicked)")
+            XCTFail("⇧⌘O did nothing, but clicking the menu item worked")
+        }
+        // A macOS static text carries its string in `value` (its `label` is empty).
+        let url = opened.value as? String ?? ""
+        XCTAssertTrue(url.contains("/my-tasks") && url.contains("workspace="), url)
+
+        let project = element(app, "sidebar.project.\(boardProject)")
+        XCTAssertTrue(project.waitForExistence(timeout: 10), "project missing from the sidebar")
+        project.click()
+        app.typeKey("o", modifierFlags: [.command, .shift])
+        let predicate = NSPredicate(format: "value CONTAINS %@", "/projects/\(boardProject)")
+        let projectLink = XCTNSPredicateExpectation(predicate: predicate, object: opened)
+        XCTAssertEqual(XCTWaiter().wait(for: [projectLink], timeout: 5), .completed, opened.value as? String ?? "")
     }
 }

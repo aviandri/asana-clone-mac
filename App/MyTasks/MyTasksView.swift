@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Overdue / Today / Upcoming / Later / No date (SPEC-MAC §5), with inline add and a completed toggle.
+@MainActor
 struct MyTasksView: View {
     let scope: WorkspaceScope
     @Bindable var store: MyTasksStore
@@ -96,6 +97,7 @@ struct MyTasksView: View {
 }
 
 /// One task row: complete toggle, title, project, due date, assignee (SPEC-MAC §5 `task.row.<id>`).
+@MainActor
 struct TaskRow: View {
     let task: TaskItem
     var showProject = false
