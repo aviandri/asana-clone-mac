@@ -73,17 +73,27 @@ enum WindowID {
 /// signed in as alice; add `-UITestSignedOut` to start at the sign-in window).
 @MainActor
 enum AppBootstrap {
+    #if DEBUG || UITEST
     static let uiTestArgument = "-UITestFakeAPI"
     static let uiTestSignedOutArgument = "-UITestSignedOut"
+    #endif
 
+    /// The fake-API launch flags exist only in Debug and UITest builds: the shipped Release app has no
+    /// fake path at all (CI checks the archive for the flag string).
     static func isUITest(arguments: [String] = ProcessInfo.processInfo.arguments) -> Bool {
-        arguments.contains(uiTestArgument)
+        #if DEBUG || UITEST
+        return arguments.contains(uiTestArgument)
+        #else
+        return false
+        #endif
     }
 
     static func makeSession(arguments: [String] = ProcessInfo.processInfo.arguments) -> AppSession {
+        #if DEBUG || UITEST
         if isUITest(arguments: arguments) {
             return AppSession.uiTest(signedIn: !arguments.contains(uiTestSignedOutArgument))
         }
+        #endif
         let settings = UserDefaultsServerSettings()
         return AppSession(
             settings: settings,

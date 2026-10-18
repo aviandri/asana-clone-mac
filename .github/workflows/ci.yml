@@ -117,10 +117,11 @@ jobs:
         run: |
           xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO build test
-      - name: Add-field UI tests against the Release build
-        # The add-field flows crashed in a Release build (v0.1.0), so they also run optimised here.
+      - name: Add-field UI tests against an optimised (UITest) build
+        # The add-field flows crashed in a Release build (v0.1.0), so they also run optimised here. UITest is
+        # Release plus the fake-API boot path, which the shipped Release build doesn't contain.
         run: |
-          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release -destination 'platform=macOS' \
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration UITest -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES \
             -only-testing:MekariProjectUITests/AppFlowUITests/testRapidInlineAddTaskInMyTasksAndAProject \
             -only-testing:MekariProjectUITests/AppFlowUITests/testTypingInTheAddFieldWhileTheListUpdates \
@@ -167,11 +168,11 @@ jobs:
         run: |
           xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO build test
-      - name: UI tests against the Release build
-        # Shipped builds are Release (optimized), and Debug/Release diverged once (v0.1.0). Runs the
-        # whole UI target; ENABLE_TESTABILITY only so the @testable hosted bundle still compiles.
+      - name: UI tests against an optimised (UITest) build
+        # Shipped builds are Release (optimized), and Debug/Release diverged once (v0.1.0). UITest = Release
+        # plus the fake-API boot path. Runs the whole UI target.
         run: |
-          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration UITest \
             -destination 'platform=macOS' -resultBundlePath build/ReleaseUITests.xcresult \
             CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES -only-testing:MekariProjectUITests build test
       - name: Upload Release UI test results
@@ -214,13 +215,26 @@ jobs:
           xcode=$(/usr/libexec/PlistBuddy -c 'Print :DTXcode' "$PLIST")
           xbuild=$(/usr/libexec/PlistBuddy -c 'Print :DTXcodeBuild' "$PLIST")
           echo "DTXcode=$xcode ($xbuild) DTSDKName=$sdk" | tee build/BUILD-INFO.txt
-      - name: Launch smoke (Release app, fake API)
-        # Start the archived app for 5 s with the fake API and fail if it exits or leaves a crash report.
+      - name: No fake path in the shipped app
+        # The Release archive must not contain the fake-API boot path (compiled only for Debug/UITest).
+        # Scans all bytes for both flags (a short literal can sit inline in __TEXT,__text, which `strings`
+        # skips by default), and first requires a hit in this job's UITest build, so a blind check fails.
+        run: |
+          has_flag() { grep -a -q -e '-UITestFakeAPI' -e '-UITestSignedOut' "$1" || strings -a "$1" | grep -q -e '-UITestFakeAPI' -e '-UITestSignedOut'; }
+          UIT_DIR=$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration UITest -showBuildSettings 2>/dev/null | awk -F' = ' '/^ *BUILT_PRODUCTS_DIR /{print $2; exit}')
+          CONTROL="$UIT_DIR/Mekari Project.app/Contents/MacOS/Mekari Project"
+          has_flag "$CONTROL" || { echo "check is blind: the UITest build should contain the flags"; exit 1; }
+          BIN="build/MekariProject.xcarchive/Products/Applications/Mekari Project.app/Contents/MacOS/Mekari Project"
+          if has_flag "$BIN"; then echo "Release binary contains the fake-API flags"; exit 1; fi
+          echo "fake-API flags: present in the UITest build, absent from the Release archive"
+      - name: Launch smoke (Release app)
+        # Start the shipped (archived) app for 5 s, signed out with no server, and fail if it exits or leaves
+        # a crash report. The fake-API launch is covered by the UITest-configuration UI tests above.
         run: |
           BIN="build/MekariProject.xcarchive/Products/Applications/Mekari Project.app/Contents/MacOS/Mekari Project"
           REPORTS="$HOME/Library/Logs/DiagnosticReports"
           find "$REPORTS" -iname '*Mekari*' -delete 2>/dev/null || true
-          "$BIN" -UITestFakeAPI > build/launch.log 2>&1 &
+          "$BIN" > build/launch.log 2>&1 &
           pid=$!
           sleep 5
           if ! kill -0 "$pid" 2>/dev/null; then
@@ -265,9 +279,9 @@ jobs:
           xcodebuild -version && xcrun --show-sdk-version && sw_vers -productVersion
       - run: brew install xcodegen
       - run: xcodegen generate
-      - name: Release build, hosted tests and add-field UI tests
+      - name: Optimised (UITest) build, hosted tests and add-field UI tests
         run: |
-          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release -destination 'platform=macOS' \
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration UITest -destination 'platform=macOS' \
             -resultBundlePath build/macos14-xcode16.xcresult \
             CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES \
             -only-testing:MekariProjectAppTests \
