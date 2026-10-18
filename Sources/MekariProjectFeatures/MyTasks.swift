@@ -43,8 +43,12 @@ public enum DueBucket: String, CaseIterable, Sendable {
   }
 
   public static func of(_ task: TaskItem, today: LocalDate) -> DueBucket {
-    if task.completed { return .completed }
-    guard let due = task.dueDate else { return .noDate }
+    task.completed ? .completed : of(due: task.dueDate, today: today)
+  }
+
+  /// The bucket for an open task due on `due`.
+  static func of(due: LocalDate?, today: LocalDate) -> DueBucket {
+    guard let due else { return .noDate }
     let days = due.days(since: today)
     if days < 0 { return .overdue }
     if days == 0 { return .today }
@@ -91,15 +95,20 @@ public final class MyTasksStore {
     self.now = now
   }
 
+  var today: LocalDate { LocalDate.today(in: calendar, now: now()) }
+
   /// Non-empty buckets in order, each sorted by due date then title. A task reassigned away from me
-  /// drops out at once.
+  /// drops out at once; a just-completed one lingers in its old bucket (unless completed are shown).
   public var groups: [TaskGroup] {
-    let today = LocalDate.today(in: calendar, now: now())
+    let today = today
     var buckets: [DueBucket: [TaskItem]] = [:]
     for id in ids {
       guard let task = tasks[id], task.assignee?.id == me.id else { continue }
-      let bucket = DueBucket.of(task, today: today)
-      if bucket == .completed && !showCompleted { continue }
+      var bucket = DueBucket.of(task, today: today)
+      if bucket == .completed && !showCompleted {
+        guard tasks.isLingering(id) else { continue }
+        bucket = DueBucket.of(due: task.dueDate, today: today)
+      }
       buckets[bucket, default: []].append(task)
     }
     return DueBucket.allCases.compactMap { bucket in
@@ -138,6 +147,14 @@ public final class MyTasksStore {
       guard mine > appliedVersion else { return }
       recordFailure(error, phase: &phase, lastError: &lastError)
     }
+  }
+
+  /// My open top-level tasks due today (for `CompletionFeedback`; subtasks never celebrate, so they
+  /// don't hold it back either).
+  func openTasksDueToday() -> [TaskItem] {
+    let today = today
+    return ids.compactMap { tasks[$0] }
+      .filter { $0.assignee?.id == me.id && $0.parentId == nil && !$0.completed && $0.dueDate == today }
   }
 
   public func toggleComplete(_ id: String) async {

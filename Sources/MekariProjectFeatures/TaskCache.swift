@@ -10,11 +10,18 @@ import Observation
 /// - a failed edit drops out on its own: later edits (in flight or already saved) stay;
 /// - server data older than what we have (`updatedAt`) is ignored, so a slow list load can't snap
 ///   a just-moved task back.
+///
+/// A just-completed task lingers (`lingerDuration`) so lists keep it in place briefly and a second
+/// click can un-complete it; an un-complete or a failed completion ends the linger at once.
 @MainActor @Observable
 public final class TaskCache {
   /// What views read: confirmed + pending edits.
   private var tasks: [String: TaskItem] = [:]
   private var details: [String: TaskDetail] = [:]
+  /// Completed in this session less than `lingerDuration` ago (`.zero`: no linger); lists still show
+  /// them in place.
+  public private(set) var lingering: Set<String> = []
+  public let lingerDuration: Duration
 
   @ObservationIgnored private let api: any MekariAPI
   @ObservationIgnored private var confirmed: [String: TaskItem] = [:]
@@ -23,6 +30,12 @@ public final class TaskCache {
   /// Deleted tasks: later copies (a slow list load) never bring them back.
   @ObservationIgnored private var deleted: Set<String> = []
   @ObservationIgnored private var nextEdit = 0
+  @ObservationIgnored private let clock: any Clock<Duration>
+  /// Per task, the current linger; an older linger's timer can't end a newer one.
+  @ObservationIgnored private var lingerTokens: [String: Int] = [:]
+  @ObservationIgnored private var nextLinger = 0
+  /// Told about completions (wired by `WorkspaceScope`).
+  @ObservationIgnored weak var feedback: CompletionFeedback?
 
   private struct PendingEdit {
     let id: Int
@@ -30,8 +43,10 @@ public final class TaskCache {
     let assignee: UserSummary??
   }
 
-  public init(api: any MekariAPI) {
+  public init(api: any MekariAPI, clock: any Clock<Duration> = ContinuousClock(), lingerDuration: Duration = .milliseconds(700)) {
     self.api = api
+    self.clock = clock
+    self.lingerDuration = lingerDuration
   }
 
   public subscript(id: String) -> TaskItem? { tasks[id] }
@@ -40,6 +55,8 @@ public final class TaskCache {
 
   /// Whether an edit to this task is still waiting for the server.
   public func hasPendingEdits(_ id: String) -> Bool { !(pending[id] ?? []).isEmpty }
+
+  public func isLingering(_ id: String) -> Bool { lingering.contains(id) }
 
   public func upsert(_ items: [TaskItem]) {
     var touched: Set<String> = []
@@ -73,6 +90,7 @@ public final class TaskCache {
     confirmed[id] = nil
     confirmedDetails[id] = nil
     pending[id] = nil
+    endLinger(id)
     if let parentID, var parent = confirmedDetails[parentID] {
       parent.subtasks.removeAll { $0.id == id }
       confirmedDetails[parentID] = parent
@@ -84,22 +102,58 @@ public final class TaskCache {
   /// edit is dropped (others stay) and the error is rethrown: an `APIError`, or `CancellationError`.
   /// Pass `assignee` when `changes.assigneeId` is set, so the row shows the person immediately.
   public func update(_ id: String, _ changes: TaskChanges, assignee: UserSummary?? = .none) async throws {
+    let completing = changes.completed == true && tasks[id]?.completed == false
     nextEdit += 1
     let edit = PendingEdit(id: nextEdit, changes: changes, assignee: assignee)
     pending[id, default: []].append(edit)
     recompute(id)
+    if changes.completed == false { endLinger(id) }
+    var linger: Int?
+    var celebrates = false
+    if completing {
+      linger = startLinger(id)
+      celebrates = feedback?.celebration(forCompleting: id) != nil
+    }
     do {
       let saved = try await api.updateTask(id, changes)
       finish(edit, of: id)
       upsert(saved)
+      if celebrates { feedback?.confirm(taskID: id) }
     } catch {
       finish(edit, of: id)
+      if let linger { endLinger(id, token: linger) }
       if error is CancellationError { throw error }
       throw error.asAPIError
     }
   }
 
   // MARK: - Internals
+
+  /// Returns the linger's token (nil: lingering is off).
+  private func startLinger(_ id: String) -> Int? {
+    guard lingerDuration > .zero else { return nil }
+    nextLinger += 1
+    let token = nextLinger
+    lingerTokens[id] = token
+    lingering.insert(id)
+    let (clock, duration) = (clock, lingerDuration)
+    Task { [weak self] in
+      do {
+        try await clock.sleep(for: duration)
+      } catch {
+        return
+      }
+      self?.endLinger(id, token: token)
+    }
+    return token
+  }
+
+  /// Ends `id`'s linger; with `token`, only if it's still that linger.
+  private func endLinger(_ id: String, token: Int? = nil) {
+    if let token, lingerTokens[id] != token { return }
+    lingerTokens[id] = nil
+    if lingering.contains(id) { lingering.remove(id) }
+  }
 
   private func finish(_ edit: PendingEdit, of id: String) {
     pending[id]?.removeAll { $0.id == edit.id }
