@@ -187,7 +187,7 @@ public struct PickableUser: Sendable, Hashable, Identifiable {
 
   public var id: String { user.id }
   public var isGuest: Bool { role == .guest }
-  public subscript<T>(dynamicMember keyPath: KeyPath<UserSummary, T> & Sendable) -> T { user[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: KeyPath<UserSummary, T>) -> T { user[keyPath: keyPath] }
 }
 
 extension PickableUser: Codable {
@@ -266,7 +266,7 @@ public struct Me: Sendable, Hashable {
     self.workspaces = workspaces
   }
 
-  public subscript<T>(dynamicMember keyPath: KeyPath<User, T> & Sendable) -> T { user[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: KeyPath<User, T>) -> T { user[keyPath: keyPath] }
 }
 
 extension Me: Codable {
@@ -388,7 +388,7 @@ public struct ProjectDetail: Sendable, Hashable, Identifiable {
   }
 
   public var id: String { project.id }
-  public subscript<T>(dynamicMember keyPath: KeyPath<Project, T> & Sendable) -> T { project[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: KeyPath<Project, T>) -> T { project[keyPath: keyPath] }
 }
 
 extension ProjectDetail: Codable {
@@ -522,7 +522,7 @@ public struct TaskDetail: Sendable, Hashable, Identifiable {
   }
 
   public var id: String { task.id }
-  public subscript<T>(dynamicMember keyPath: KeyPath<TaskItem, T> & Sendable) -> T { task[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: KeyPath<TaskItem, T>) -> T { task[keyPath: keyPath] }
 }
 
 extension TaskDetail: Codable {
