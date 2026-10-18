@@ -216,4 +216,32 @@ final class AppFlowUITests: XCTestCase {
         XCTAssertEqual(field.value as? String ?? "", "", "the field clears after adding")
         XCTAssertEqual(app.state, .runningForeground)
     }
+
+    /// rc1 QA: after using an add field, ⌘Z in the inspector's title still undoes the typing (the add
+    /// field must not leave the shared field editor without undo or with stale undo entries).
+    @MainActor
+    func testUndoInTheInspectorTitleWorksAfterAnAdd() {
+        let app = launch()
+        let field = element(app, "addTask.field")
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "My Tasks add field missing")
+        field.click()
+        field.typeText("Undo check task\r")
+
+        let row = element(app, "task.row.\(fixLogin)")
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "My Tasks row missing")
+        row.click()
+        let title = app.textFields.matching(NSPredicate(format: "label == 'Task name'")).firstMatch
+        XCTAssertTrue(title.waitForExistence(timeout: 10), "inspector title field missing")
+        let original = title.value as? String ?? ""
+        XCTAssertFalse(original.isEmpty)
+        title.click()
+        title.typeKey(.rightArrow, modifierFlags: .command) // to the end
+        title.typeText(" edited")
+        XCTAssertEqual(title.value as? String, original + " edited")
+        app.typeKey("z", modifierFlags: .command)
+        let reverted = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", original), object: title)
+        XCTAssertEqual(XCTWaiter().wait(for: [reverted], timeout: 5), .completed, "⌘Z didn't revert the title: \(title.value as? String ?? "")")
+        XCTAssertEqual(app.state, .runningForeground)
+        title.typeKey(.escape, modifierFlags: [])
+    }
 }

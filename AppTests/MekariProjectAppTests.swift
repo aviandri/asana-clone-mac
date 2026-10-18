@@ -1,3 +1,4 @@
+import AppKit
 import MekariProjectFeatures
 import MekariProjectKit
 import Observation
@@ -153,6 +154,29 @@ final class MekariProjectAppTests: XCTestCase {
         await store.load()
         XCTAssertNotNil(store.task)
         XCTAssertEqual(InspectorPreview.detail(store: store, cache: scope.tasks), store.task)
+    }
+
+    /// rc1 QA: add fields edit in their own undo-free field editor; the window's shared editor (used by
+    /// the inspector's title and description) keeps undo, so ⌘Z there still works.
+    @MainActor
+    func testAddFieldUsesAPrivateUndoFreeEditorAndLeavesTheSharedOneAlone() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        let field = UndoFreeTextField(frame: NSRect(x: 10, y: 10, width: 200, height: 22))
+        let other = NSTextField(frame: NSRect(x: 10, y: 50, width: 200, height: 22))
+        window.contentView?.addSubview(field)
+        window.contentView?.addSubview(other)
+        let shared = try XCTUnwrap(window.fieldEditor(true, for: nil) as? NSTextView)
+        XCTAssertTrue(shared.allowsUndo)
+
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        XCTAssertTrue(editor === field.privateEditor, "the add field edits in its own editor")
+        XCTAssertFalse(editor === shared)
+        XCTAssertFalse(editor.allowsUndo)
+
+        XCTAssertTrue(window.makeFirstResponder(other))
+        XCTAssertTrue(other.currentEditor() === shared, "other fields still use the shared editor")
+        XCTAssertTrue(shared.allowsUndo, "and it keeps undo")
     }
 
     /// QA F4: descriptions (and comments) render inline markdown, not literal asterisks.

@@ -9,8 +9,9 @@ import SwiftUI
 /// registration (NSUndoReplaceCharacters) then threw NSRangeException, which unwound through
 /// AttributeGraph/Observation and corrupted memory seconds later. So here:
 /// - there is no text binding, and `updateNSView` never writes `stringValue`; the field owns its text;
-/// - the cell has `allowsUndo = false`, so its field editor registers no undo (per field: other text
-///   fields sharing the window's field editor keep undo);
+/// - the field edits in its OWN field editor (an NSTextView with undo off, from its cell), never the
+///   window's shared one, so no undo is registered here and other fields' undo is untouched (a first
+///   version turned undo off on the shared editor and broke ⌘Z in the inspector, rc1 QA);
 /// - after an add the field ends editing, clears, and takes focus back on the next turn.
 @MainActor
 struct AddItemField: NSViewRepresentable {
@@ -32,7 +33,6 @@ struct AddItemField: NSViewRepresentable {
         field.cell?.usesSingleLineMode = true
         field.cell?.isScrollable = true
         field.cell?.wraps = false
-        field.cell?.allowsUndo = false
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         field.delegate = context.coordinator
@@ -80,10 +80,17 @@ struct AddItemField: NSViewRepresentable {
             }
         }
 
+        nonisolated func controlTextDidEndEditing(_ notification: Notification) {
+            MainActor.assumeIsolated {
+                (notification.object as? UndoFreeTextField)?.dropUndo()
+            }
+        }
+
         /// End editing first, then clear the (no longer live) cell, then optionally come back.
         private func reset(_ field: NSTextField, refocus: Bool) {
             field.window?.makeFirstResponder(nil)
             field.stringValue = ""
+            (field as? UndoFreeTextField)?.dropUndo()
             guard refocus else { return }
             DispatchQueue.main.async { [weak field] in
                 MainActor.assumeIsolated {
@@ -95,15 +102,37 @@ struct AddItemField: NSViewRepresentable {
     }
 }
 
-/// Re-applies "no undo" to the shared field editor each time this field takes it (the cell's
-/// `allowsUndo` covers setup; this covers editors set up before the cell changed).
+/// An NSTextField that edits in a private, undo-free field editor (see `UndoFreeTextFieldCell`).
 final class UndoFreeTextField: NSTextField {
-    override func becomeFirstResponder() -> Bool {
-        let became = super.becomeFirstResponder()
-        if became, let editor = currentEditor() as? NSTextView {
-            editor.allowsUndo = false
-        }
-        return became
+    override class var cellClass: AnyClass? {
+        get { UndoFreeTextFieldCell.self }
+        set {}
+    }
+
+    /// The private field editor, created on first edit.
+    var privateEditor: NSTextView? { (cell as? UndoFreeTextFieldCell)?.editor }
+
+    /// Nothing should be registered (undo is off), but make sure no undo entry can outlive an edit
+    /// and later run against storage that was cleared.
+    func dropUndo() {
+        guard let editor = privateEditor else { return }
+        let manager = window?.undoManager
+        manager?.removeAllActions(withTarget: editor)
+        if let storage = editor.textStorage { manager?.removeAllActions(withTarget: storage) }
+    }
+}
+
+/// Hands its control a private field editor with undo off, instead of the window's shared one.
+final class UndoFreeTextFieldCell: NSTextFieldCell {
+    private(set) var editor: NSTextView?
+
+    override func fieldEditor(for controlView: NSView) -> NSTextView? {
+        if let editor { return editor }
+        let editor = NSTextView()
+        editor.isFieldEditor = true
+        editor.allowsUndo = false
+        self.editor = editor
+        return editor
     }
 }
 
