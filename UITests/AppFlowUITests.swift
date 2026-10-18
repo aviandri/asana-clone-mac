@@ -214,7 +214,15 @@ final class AppFlowUITests: XCTestCase {
         // field again (XCUITest hit-tests stale frames mid-animation).
         _ = XCTWaiter().wait(for: [XCTestExpectation(description: "list settles")], timeout: 1.5)
         if !waitForFocus(field, timeout: 1) { field.click() }
-        XCTAssertTrue(waitForFocus(field), "add field can't be focused after the list update")
+        if !waitForFocus(field) {
+            // Diagnostics: every add field's frame, hittability and focus, plus any extra windows.
+            let fields = app.descendants(matching: .any).matching(identifier: "addTask.field").allElementsBoundByIndex
+            for (i, f) in fields.enumerated() {
+                print("addTask.field[\(i)] frame=\(f.frame) hittable=\(f.isHittable) focus=\(f.value(forKey: "hasKeyboardFocus") ?? "?") value=\(f.value ?? "nil")")
+            }
+            print("windows: \(app.windows.allElementsBoundByIndex.map { "\($0.identifier)|\($0.title)|\($0.frame)" })")
+            XCTFail("add field can't be focused after the list update")
+        }
         field.typeText(" rows change\r")
         XCTAssertTrue(waitForFocus(field), "add field didn't keep focus")
         XCTAssertEqual(field.value as? String ?? "", "", "the field clears after adding")
