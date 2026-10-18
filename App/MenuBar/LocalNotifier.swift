@@ -57,6 +57,25 @@ final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate {
 /// Keeps the app running in the menu bar after the last window closes (when enabled), and installs
 /// the notification delegate early so a click that launches the app is handled.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set by the App: opens a `mekariproject://` URL (deep links, SPEC-MAC §5).
+    @MainActor static var onOpenURL: (URL) -> Void = { _ in }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Take URL events ourselves: SwiftUI only delivers them to a live scene's onOpenURL, so a link
+        // with every window closed (menu-bar-only) or at cold launch would otherwise be lost.
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleGetURL(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+    }
+
+    @objc private func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent reply: NSAppleEventDescriptor) {
+        guard let string = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: string) else { return }
+        MainActor.assumeIsolated { AppDelegate.onOpenURL(url) }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated { LocalNotifier.shared.install() }
     }

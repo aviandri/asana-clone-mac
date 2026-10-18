@@ -35,11 +35,6 @@ struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: session.notice)
-        // mekariproject://task/<id>, mekariproject://project/<id> (SPEC-MAC §5).
-        .onOpenURL { url in
-            guard let link = DeepLink(url: url) else { return }
-            Task { await router.follow(link, in: session) }
-        }
         .alert("Can't Open", isPresented: Binding(get: { router.alert != nil }, set: { if !$0 { router.alert = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {

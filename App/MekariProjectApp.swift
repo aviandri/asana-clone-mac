@@ -16,11 +16,16 @@ struct MekariProjectApp: App {
         _session = State(initialValue: session)
         _router = State(initialValue: router)
         // Session-driven wiring at App level: works with only the menu bar open, too.
-        _wiring = State(initialValue: SessionWiring(session: session, router: router))
+        _wiring = State(initialValue: SessionWiring(session: session, router: router, notifier: .shared))
         let notifier = LocalNotifier.shared
         notifier.isDisabled = AppBootstrap.isUITest()
         // A banner click opens its task, switching workspace if needed (like a deep link).
         notifier.onOpenTask = { id in Task { await router.follow(.task(id: id), in: session) } }
+        // mekariproject:// URLs, also with no window open (AppDelegate's Apple Event handler).
+        AppDelegate.onOpenURL = { url in
+            guard let link = DeepLink(url: url) else { return }
+            Task { await router.follow(link, in: session) }
+        }
         // Once per launch, at the App level: a task window restored on its own needs a session too.
         Task { await session.start() }
     }
@@ -30,8 +35,8 @@ struct MekariProjectApp: App {
         Window("Mekari Project", id: WindowID.main) {
             RootView(session: session, router: router)
         }
-        // mekariproject:// links always go to the main window (opening it if closed), never a Task window.
-        .handlesExternalEvents(matching: [DeepLink.scheme])
+        // URLs are handled by AppDelegate (works with every window closed); no scene should open for them.
+        .handlesExternalEvents(matching: [])
         .defaultSize(width: 1120, height: 720)
         .commands { AppCommands(session: session, router: router) }
 

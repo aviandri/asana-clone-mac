@@ -75,7 +75,9 @@ struct SearchPalette: View {
                             .buttonStyle(.plain)
                             .id(item.id)
                             .accessibilityIdentifier(item.accessibilityID)
+                            // Add and remove explicitly: a conditional add alone leaves the trait behind.
                             .accessibilityAddTraits(index == selected ? .isSelected : [])
+                            .accessibilityRemoveTraits(index == selected ? [] : .isSelected)
                         }
                     }
                     .padding(.bottom, 8)

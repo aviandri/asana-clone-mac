@@ -15,7 +15,7 @@ final class SessionWiring {
     private var wiredGeneration: Int?
     private var replaying = false
 
-    init(session: AppSession, router: AppRouter, notifier: LocalNotifier = .shared) {
+    init(session: AppSession, router: AppRouter, notifier: LocalNotifier) {
         self.session = session
         self.router = router
         self.notifier = notifier
