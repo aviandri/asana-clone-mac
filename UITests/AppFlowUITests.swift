@@ -210,7 +210,19 @@ final class AppFlowUITests: XCTestCase {
         let toggle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Mark ' AND label ENDSWITH ' complete'")).firstMatch
         XCTAssertTrue(toggle.waitForExistence(timeout: 5), "no task to complete")
         toggle.click() // the List updates (row restyled or removed) while the field holds a draft
-        if !waitForFocus(field, timeout: 2) { field.click() }
+        // The completed row lingers ~700 ms, then animates out: let the List settle before touching the
+        // field again (XCUITest hit-tests stale frames mid-animation).
+        _ = XCTWaiter().wait(for: [XCTestExpectation(description: "list settles")], timeout: 1.5)
+        if !waitForFocus(field, timeout: 1) { field.click() }
+        if !waitForFocus(field) {
+            // Diagnostics: every add field's frame, hittability and focus, plus any extra windows.
+            let fields = app.descendants(matching: .any).matching(identifier: "addTask.field").allElementsBoundByIndex
+            for (i, f) in fields.enumerated() {
+                print("addTask.field[\(i)] frame=\(f.frame) hittable=\(f.isHittable) focus=\(f.value(forKey: "hasKeyboardFocus") ?? "?") value=\(f.value ?? "nil")")
+            }
+            print("windows: \(app.windows.allElementsBoundByIndex.map { "\($0.identifier)|\($0.title)|\($0.frame)" })")
+            XCTFail("add field can't be focused after the list update")
+        }
         field.typeText(" rows change\r")
         XCTAssertTrue(waitForFocus(field), "add field didn't keep focus")
         XCTAssertEqual(field.value as? String ?? "", "", "the field clears after adding")
@@ -243,5 +255,20 @@ final class AppFlowUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter().wait(for: [reverted], timeout: 5), .completed, "⌘Z didn't revert the title: \(title.value as? String ?? "")")
         XCTAssertEqual(app.state, .runningForeground)
         title.typeKey(.escape, modifierFlags: [])
+    }
+
+    /// #25 device QA: a click in the middle of an open checkbox completes the task. The open mark is a
+    /// ring; its inside must still be the button, not fall through to selecting the row.
+    @MainActor
+    func testClickingTheMiddleOfACheckboxCompletesInsteadOfSelecting() {
+        let app = launch()
+        let toggle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Mark ' AND label ENDSWITH ' complete'")).firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "no open task in My Tasks")
+        let label = toggle.label
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        // Completed: the "Mark … complete" button is gone (relabelled, then the row lingers and goes).
+        let same = app.buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+        XCTAssertTrue(waitForNonExistence(of: same, timeout: 5), "the click didn't complete the task")
+        XCTAssertFalse(element(app, "task.inspector").exists, "the click selected the row instead")
     }
 }

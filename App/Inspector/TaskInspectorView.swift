@@ -89,10 +89,8 @@ struct TaskInspectorView: View {
                 .help("Open the parent task")
             }
             HStack {
-                Button {
+                CompleteTaskButton(completed: task.completed, title: task.title, canEdit: store.canEdit) {
                     Task { await store.toggleComplete() }
-                } label: {
-                    Label(task.completed ? "Completed" : "Mark Complete", systemImage: task.completed ? "checkmark.circle.fill" : "checkmark.circle")
                 }
                 .tint(task.completed ? .green : nil)
                 .buttonStyle(.bordered)
@@ -402,19 +400,14 @@ struct SubtasksSection: View {
             Text("Subtasks").font(.headline)
             ForEach(subtasks) { subtask in
                 HStack(spacing: 8) {
-                    Button {
+                    CompletionCheckbox(completed: subtask.completed, title: subtask.title, size: 14, canEdit: store.canEdit) {
                         Task { await store.toggleSubtask(subtask.id) }
-                    } label: {
-                        Image(systemName: subtask.completed ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(subtask.completed ? Color.green : Color.secondary)
+                    }
+                    Button { onOpenTask(subtask.id) } label: {
+                        CompletionTitle(title: subtask.title, completed: subtask.completed)
                     }
                     .buttonStyle(.plain)
-                    .disabled(!store.canEdit)
-                    .accessibilityLabel(subtask.completed ? "Mark \(subtask.title) incomplete" : "Mark \(subtask.title) complete")
-                    Button(subtask.title) { onOpenTask(subtask.id) }
-                        .buttonStyle(.plain)
-                        .strikethrough(subtask.completed)
-                        .foregroundStyle(subtask.completed ? .secondary : .primary)
+                    .accessibilityLabel(subtask.title)
                     Spacer()
                     if let assignee = subtask.assignee { Avatar(user: assignee, size: 16) }
                 }

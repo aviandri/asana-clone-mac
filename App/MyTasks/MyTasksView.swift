@@ -10,6 +10,7 @@ struct MyTasksView: View {
     @Binding var selection: String?
 
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         List(selection: $selection) {
@@ -17,6 +18,7 @@ struct MyTasksView: View {
                 AddTaskRow { title in
                     Task { await store.addTask(title: title) }
                 }
+                .id("addTask.myTasks") // stable: never re-created by task row changes
             }
 
             ForEach(store.groups) { group in
@@ -29,6 +31,9 @@ struct MyTasksView: View {
                             .tag(id)
                         }
                     }
+                    // Scoped to the task rows (not the List, so the add row and other reloads aren't
+                    // swept into the transaction): a completed row lingers briefly (TaskCache.lingerDuration), then collapses.
+                    .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: scope.tasks.lingering)
                 }
             }
         }
@@ -90,19 +95,9 @@ struct TaskRow: View {
     var body: some View {
         let today = LocalDate.today()
         HStack(spacing: 8) {
-            Button(action: onToggle) {
-                Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(task.completed ? Color.green : Color.secondary)
-                    .font(.system(size: 15))
-            }
-            .buttonStyle(.plain)
-            .disabled(!canEdit)
-            .accessibilityLabel(task.completed ? "Mark \(task.title) incomplete" : "Mark \(task.title) complete")
+            CompletionCheckbox(completed: task.completed, title: task.title, canEdit: canEdit, action: onToggle)
 
-            Text(task.title)
-                .strikethrough(task.completed)
-                .foregroundStyle(task.completed ? .secondary : .primary)
-                .lineLimit(1)
+            CompletionTitle(title: task.title, completed: task.completed)
 
             if task.subtaskCount > 0 {
                 Label("\(task.completedSubtaskCount)/\(task.subtaskCount)", systemImage: "list.bullet.indent")

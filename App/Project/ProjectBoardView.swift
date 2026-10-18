@@ -35,6 +35,7 @@ private struct BoardColumn: View {
     let section: MekariProjectKit.Section?
     @Binding var selection: String?
     @State private var targeted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let ids = store.taskIDs(in: sectionID)
@@ -56,8 +57,11 @@ private struct BoardColumn: View {
                             .onTapGesture { selection = id }
                             .taskDrag(task, enabled: store.canEdit)
                             .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: id)
+                            .transition(reduceMotion ? .opacity : .asymmetric(insertion: .opacity, removal: .move(edge: .trailing).combined(with: .opacity)))
                         }
                     }
+                    // A completed card lingers briefly (TaskCache.lingerDuration), then slides out.
+                    .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: scope.tasks.lingering)
                     if store.canEdit {
                         AddTaskRow { title in
                             Task { await store.addTask(title: title, section: sectionID) }
@@ -99,17 +103,13 @@ private struct BoardCard: View {
         let today = LocalDate.today()
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 6) {
-                Button(action: onToggle) {
-                    Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(task.completed ? Color.green : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .disabled(!canEdit)
-                .accessibilityLabel(task.completed ? "Mark \(task.title) incomplete" : "Mark \(task.title) complete")
+                CompletionCheckbox(completed: task.completed, title: task.title, canEdit: canEdit, action: onToggle)
+                // Card titles wrap, so the strike and dim crossfade instead of the rows' sweep.
                 Text(task.title)
                     .strikethrough(task.completed)
                     .foregroundStyle(task.completed ? .secondary : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .animation(.easeOut(duration: 0.2), value: task.completed)
             }
             HStack(spacing: 6) {
                 if task.priority != Priority.none {

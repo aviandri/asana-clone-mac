@@ -10,6 +10,7 @@ struct ProjectListView: View {
     let store: ProjectStore
     @Binding var selection: String?
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         List(selection: $selection) {
@@ -60,10 +61,13 @@ struct ProjectListView: View {
                     .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: id)
                 }
             }
+            // Scoped to the task rows, not the List (see MyTasksView): the add row below stays out of it.
+            .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: scope.tasks.lingering)
             if store.canEdit {
                 AddTaskRow { title in
                     Task { await store.addTask(title: title, section: sectionID) }
                 }
+                .id("addTask.\(sectionID ?? "none")") // stable across row changes
                 .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: nil)
             }
         } header: {

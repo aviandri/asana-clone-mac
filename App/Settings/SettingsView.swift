@@ -6,6 +6,11 @@ import SwiftUI
 enum SettingsKey {
     static let showInMenuBar = "showInMenuBar"
     static let notificationsEnabled = "notificationsEnabled"
+    /// The occasional petal burst on completing a task (default on, like the web's "Celebrations").
+    /// Same key as `CompletionFeedback.celebrationsEnabledKey`: Features honours it (no event when off).
+    static let celebrations = CompletionFeedback.celebrationsEnabledKey
+    /// A soft tick on completing a task (default off).
+    static let completionSound = "completionSound"
 }
 
 /// ⌘, (SPEC-MAC §5): server (sign out to change), menu bar, notifications, launch at login.
@@ -29,6 +34,8 @@ struct SettingsView: View {
 private struct GeneralSettings: View {
     @AppStorage(SettingsKey.showInMenuBar) private var showInMenuBar = true
     @AppStorage(SettingsKey.notificationsEnabled) private var notificationsEnabled = true
+    @AppStorage(SettingsKey.celebrations) private var celebrations = true
+    @AppStorage(SettingsKey.completionSound) private var completionSound = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var needsApproval = SMAppService.mainApp.status == .requiresApproval
     @State private var loginItemError: String?
@@ -38,6 +45,9 @@ private struct GeneralSettings: View {
         Form {
             Toggle("Show in menu bar", isOn: $showInMenuBar)
             Toggle("Notify me about new inbox items", isOn: $notificationsEnabled)
+            Toggle("Celebrations", isOn: $celebrations)
+                .help("An occasional burst of petals when you finish the last task in a section, a project or today's list")
+            Toggle("Play a sound when completing tasks", isOn: $completionSound)
             if needsApproval {
                 // Registered, but macOS wants the user's OK; a toggle would just flip back.
                 LabeledContent("Launch at login") {
