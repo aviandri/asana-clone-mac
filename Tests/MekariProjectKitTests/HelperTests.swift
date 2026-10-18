@@ -94,12 +94,29 @@ final class LinksTests: XCTestCase {
   }
 
   func testDeepLinks() {
-    XCTAssertEqual(DeepLink(url: URL(string: "mekariproject://task/abc")!), .task(id: "abc"))
-    XCTAssertEqual(DeepLink(url: URL(string: "mekariproject://project/p-1/")!), .project(id: "p-1"))
-    XCTAssertNil(DeepLink(url: URL(string: "mekariproject://goal/abc")!))
+    let id = "50000000-0000-4000-8000-000000000001"
+    XCTAssertEqual(DeepLink(url: URL(string: "mekariproject://task/\(id)")!), .task(id: id))
+    XCTAssertEqual(DeepLink(url: URL(string: "mekariproject://project/\(id)/")!), .project(id: id))
+    XCTAssertEqual(DeepLink(url: URL(string: "MekariProject://TASK/\(id.uppercased())")!), .task(id: id), "normalised to lowercase")
+    XCTAssertNil(DeepLink(url: URL(string: "mekariproject://goal/\(id)")!))
     XCTAssertNil(DeepLink(url: URL(string: "mekariproject://task")!))
-    XCTAssertNil(DeepLink(url: URL(string: "https://task/abc")!))
-    XCTAssertEqual(DeepLink.task(id: "abc").url.absoluteString, "mekariproject://task/abc")
+    XCTAssertNil(DeepLink(url: URL(string: "https://task/\(id)")!))
+    XCTAssertEqual(DeepLink.task(id: id).url.absoluteString, "mekariproject://task/\(id)")
+  }
+
+  func testDeepLinksRejectAnythingButAUUID() {
+    for bad in [
+      "mekariproject://task/abc",
+      "mekariproject://task/..%2Fusers",
+      "mekariproject://task/%2E%2E%2Fusers",
+      "mekariproject://task/../users",
+      "mekariproject://project/p-1",
+      "mekariproject://task/50000000-0000-4000-8000-000000000001/comments",
+      "mekariproject://task/50000000-0000-4000-8000-00000000000",
+      "mekariproject://task/50000000-0000-4000-8000-000000000001%3Fx=1",
+    ] {
+      XCTAssertNil(URL(string: bad).flatMap(DeepLink.init(url:)), bad)
+    }
   }
 
   func testServerURLNormalisation() {

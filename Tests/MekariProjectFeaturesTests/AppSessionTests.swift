@@ -274,8 +274,17 @@ final class AppSessionTests: XCTestCase {
     XCTAssertEqual(task, .open(.task(id: DemoIDs.taskWithStories, projectID: DemoIDs.boardProject)))
     XCTAssertEqual(session.current?.id, DemoIDs.mekari)
 
-    let missing = await session.resolve(.task(id: "nope"))
+    let missing = await session.resolve(.task(id: "00000000-0000-4000-8000-00000000dead"))
     XCTAssertEqual(missing, .noAccess)
+
+    // Ids that aren't UUIDs never reach a request.
+    let before = await fake.calls.count
+    let traversal = await session.resolve(.task(id: "../users"))
+    let junk = await session.resolve(.project(id: "nope"))
+    XCTAssertEqual(traversal, .noAccess)
+    XCTAssertEqual(junk, .noAccess)
+    let after = await fake.calls.count
+    XCTAssertEqual(after, before)
   }
 
   @MainActor

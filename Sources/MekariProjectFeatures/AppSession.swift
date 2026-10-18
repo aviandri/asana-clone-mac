@@ -236,6 +236,12 @@ public final class AppSession {
   /// Opens a deep link, switching workspace first when the resource lives in another one I belong to.
   public func resolve(_ link: DeepLink) async -> DeepLinkResult {
     guard let api else { return .noAccess }
+    // `DeepLink(url:)` only yields UUIDs, but the cases can be built directly: never let anything
+    // else reach a request path.
+    switch link {
+    case .task(let id), .project(let id):
+      guard UUID(uuidString: id) != nil else { return .noAccess }
+    }
     do {
       let workspaceID: String
       let target: NavigationTarget
