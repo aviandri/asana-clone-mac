@@ -56,7 +56,8 @@ struct TaskInspectorView: View {
     /// Commits from onDisappear can fire while a workspace switch replaces the scope; by then requests
     /// carry the new workspace's header, so a late save for this task is dropped instead.
     private var canCommit: Bool {
-        !session.isSwitching && session.scope?.id == scope.id
+        guard !session.isSwitching else { return false }
+        return session.scope?.id == scope.id
     }
 
     @ViewBuilder private func header(_ task: TaskDetail) -> some View {

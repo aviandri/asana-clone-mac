@@ -22,6 +22,12 @@ final class AppFlowUITests: XCTestCase {
         app.descendants(matching: .any)[identifier].firstMatch
     }
 
+    /// `XCUIElement.waitForNonExistence(timeout:)` is Xcode 16+; this works on Xcode 15.4 too.
+    private func waitForNonExistence(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
     @MainActor
     func testOpeningAProjectFromTheSidebarShowsItsTasks() {
         let app = launch()
@@ -73,7 +79,7 @@ final class AppFlowUITests: XCTestCase {
         let app = launch()
         app.typeKey("w", modifierFlags: .command) // close the main window; the menu bar keeps the app alive
         let sidebar = element(app, "sidebar.myTasks")
-        XCTAssertTrue(sidebar.waitForNonExistence(timeout: 5), "main window didn't close")
+        XCTAssertTrue(waitForNonExistence(of: sidebar, timeout: 5), "main window didn't close")
 
         app.open(try XCTUnwrap(URL(string: "mekariproject://task/\(fixLogin)")))
         XCTAssertTrue(sidebar.waitForExistence(timeout: 10), "main window didn't reopen for the link")
