@@ -21,6 +21,7 @@ struct ProjectListView: View {
             }
         }
         .listStyle(.inset)
+        .taskListActions(open: openTaskWindow) { menu(for: $0) }
         .overlay {
             if store.detail != nil, store.sections.isEmpty, !store.hasUnsectionedTasks {
                 ContentUnavailableView("No Tasks Yet", systemImage: "checklist", description: Text(store.canEdit ? "Add a section, then add tasks to it." : "Nothing here yet."))
