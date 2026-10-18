@@ -110,10 +110,20 @@ final class AppFlowUITests: XCTestCase {
     @MainActor
     func testOpenInBrowserShortcutOpensTheCurrentPage() {
         let app = launch()
-        XCTAssertTrue(app.menuBars.menuBarItems["File"].menuItems["Open in Browser"].exists, "File → Open in Browser missing")
+        let file = app.menuBars.menuBarItems["File"]
+        let item = file.menuItems["Open in Browser"]
+        XCTAssertTrue(item.exists, "File → Open in Browser missing")
+        XCTAssertTrue(item.isEnabled, "File → Open in Browser is disabled")
         let opened = element(app, "uitest.openedURL")
         app.typeKey("o", modifierFlags: [.command, .shift])
-        XCTAssertTrue(opened.waitForExistence(timeout: 5), "⇧⌘O did nothing")
+        if !opened.waitForExistence(timeout: 5) {
+            print("Open in Browser: main window AX tree:\n\(app.windows.firstMatch.debugDescription)")
+            // Tell "the shortcut isn't delivered" apart from "the command does nothing".
+            file.click()
+            item.click()
+            XCTAssertTrue(opened.waitForExistence(timeout: 5), "File → Open in Browser did nothing (clicked)")
+            XCTFail("⇧⌘O did nothing, but clicking the menu item worked")
+        }
         XCTAssertTrue(opened.label.contains("/my-tasks") && opened.label.contains("workspace="), opened.label)
 
         let project = element(app, "sidebar.project.\(boardProject)")
