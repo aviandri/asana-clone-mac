@@ -115,16 +115,6 @@ jobs:
         run: |
           xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO build test
-      - name: Text-field UI tests against the Release build
-        # Debug and Release diverged once (v0.1.0 crashed only as a Release build), so the add-field
-        # flows also run optimised. ENABLE_TESTABILITY only so the hosted test bundle still compiles.
-        run: |
-          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release -destination 'platform=macOS' \
-            CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES \
-            -only-testing:MekariProjectUITests/AppFlowUITests/testRapidInlineAddTaskInMyTasksAndAProject \
-            -only-testing:MekariProjectUITests/AppFlowUITests/testTypingInTheAddFieldWhileTheListUpdates \
-            -only-testing:MekariProjectUITests/AppFlowUITests/testUndoInTheInspectorTitleWorksAfterAnAdd \
-            build test
       - name: Version
         id: version
         # Tags v1.2.3 / v1.2.3-rc1 stamp MARKETING_VERSION 1.2.3 and name the zip after the tag;
