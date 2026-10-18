@@ -135,6 +135,26 @@ final class MekariProjectAppTests: XCTestCase {
         XCTAssertEqual(opened.count, 2)
     }
 
+    /// rc1 QA P1: selecting a task shows its list row at once, then the loaded detail; no blank panel.
+    @MainActor
+    func testInspectorShowsTheCachedRowBeforeTheDetailLoads() async throws {
+        let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI"])
+        await session.start()
+        let scope = try XCTUnwrap(session.scope)
+        await scope.myTasks.refresh()
+        let row = try XCTUnwrap(scope.tasks[DemoIDs.taskWithStories], "My Tasks row cached")
+        let store = scope.taskDetail(DemoIDs.taskWithStories)
+        XCTAssertNil(store.task, "no detail fetched yet")
+
+        let preview = try XCTUnwrap(InspectorPreview.detail(store: store, cache: scope.tasks))
+        XCTAssertEqual(preview.title, row.title)
+        XCTAssertFalse(store.canEdit, "read-only until the detail is in")
+
+        await store.load()
+        XCTAssertNotNil(store.task)
+        XCTAssertEqual(InspectorPreview.detail(store: store, cache: scope.tasks), store.task)
+    }
+
     /// QA F4: descriptions (and comments) render inline markdown, not literal asterisks.
     func testDescriptionMarkdownRendersInline() {
         let seeded = Formatting.markdown("After signing in, users land on **/** instead of the page they came from.")
