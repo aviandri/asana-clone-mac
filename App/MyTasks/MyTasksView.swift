@@ -90,19 +90,9 @@ struct TaskRow: View {
     var body: some View {
         let today = LocalDate.today()
         HStack(spacing: 8) {
-            Button(action: onToggle) {
-                Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(task.completed ? Color.green : Color.secondary)
-                    .font(.system(size: 15))
-            }
-            .buttonStyle(.plain)
-            .disabled(!canEdit)
-            .accessibilityLabel(task.completed ? "Mark \(task.title) incomplete" : "Mark \(task.title) complete")
+            CompletionCheckbox(completed: task.completed, title: task.title, canEdit: canEdit, action: onToggle)
 
-            Text(task.title)
-                .strikethrough(task.completed)
-                .foregroundStyle(task.completed ? .secondary : .primary)
-                .lineLimit(1)
+            CompletionTitle(title: task.title, completed: task.completed)
 
             if task.subtaskCount > 0 {
                 Label("\(task.completedSubtaskCount)/\(task.subtaskCount)", systemImage: "list.bullet.indent")

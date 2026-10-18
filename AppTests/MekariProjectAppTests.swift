@@ -179,6 +179,28 @@ final class MekariProjectAppTests: XCTestCase {
         XCTAssertTrue(shared.allowsUndo, "and it keeps undo")
     }
 
+    /// 0.1.1 completion feedback: a completion the server rejects rolls back in the cache, which is
+    /// what plays the checkbox/strike animation in reverse (they follow `completed`) and shows the error.
+    @MainActor
+    func testRejectedCompletionRollsBackSoTheAnimationReverses() async throws {
+        let fake = FakeMekariAPI(signedInAs: "alice@example.com")
+        let session = AppSession(settings: InMemoryServerSettings(serverURL: URL(string: "https://demo.invalid")),
+                                 tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake })
+        await session.start()
+        let scope = try XCTUnwrap(session.scope)
+        await scope.myTasks.refresh()
+        let id = DemoIDs.taskWithStories
+        XCTAssertEqual(scope.tasks[id]?.completed, false)
+
+        await fake.failNext(.updateTask, with: APIError(code: .forbidden, status: 403, message: "Not allowed"))
+        await scope.myTasks.toggleComplete(id)
+        XCTAssertEqual(scope.tasks[id]?.completed, false, "rolled back: the mark animates back to open")
+        XCTAssertNotNil(scope.myTasks.lastError, "and the error banner shows")
+
+        await scope.myTasks.toggleComplete(id)
+        XCTAssertEqual(scope.tasks[id]?.completed, true, "a later accepted completion sticks")
+    }
+
     /// QA F4: descriptions (and comments) render inline markdown, not literal asterisks.
     func testDescriptionMarkdownRendersInline() {
         let seeded = Formatting.markdown("After signing in, users land on **/** instead of the page they came from.")

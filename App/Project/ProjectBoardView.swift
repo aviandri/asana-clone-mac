@@ -99,17 +99,13 @@ private struct BoardCard: View {
         let today = LocalDate.today()
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 6) {
-                Button(action: onToggle) {
-                    Image(systemName: task.completed ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(task.completed ? Color.green : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .disabled(!canEdit)
-                .accessibilityLabel(task.completed ? "Mark \(task.title) incomplete" : "Mark \(task.title) complete")
+                CompletionCheckbox(completed: task.completed, title: task.title, canEdit: canEdit, action: onToggle)
+                // Card titles wrap, so the strike and dim crossfade instead of the rows' sweep.
                 Text(task.title)
                     .strikethrough(task.completed)
                     .foregroundStyle(task.completed ? .secondary : .primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .animation(.easeOut(duration: 0.2), value: task.completed)
             }
             HStack(spacing: 6) {
                 if task.priority != Priority.none {
