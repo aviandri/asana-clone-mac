@@ -87,21 +87,26 @@ NODE_PATH=/tmp/resvg/node_modules node scripts/make-app-icon.mjs
 | `linux-kit` | `swift build` + `swift test` in the `swift:6.0` container |
 | `linux-kit-swift510` | the same in the `swift:5.10` container (Xcode 15.4's compiler, the oldest we support) |
 | `linux-contract` | BE `main` (Postgres service, migrate, full seed) + `swift test --filter ContractTests` |
-| `macos-app` | `macos-15`: `swift test`, XcodeGen, `xcodebuild build test` (unsigned), universal Release archive, ad-hoc signed, launch smoke (5 s with `-UITestFakeAPI`), zipped; uploaded as an artifact on pushes to `main` and tags |
-| `macos-xcode15` | `macos-14` + Xcode 15.4: XcodeGen, `xcodebuild build test` (unsigned); no archive |
-| `release` | `v*` tags only: GitHub Release with the zip and generated notes |
+| `macos-xcode15` | **The release build.** `macos-14` + Xcode 15.4 (macOS 14.5 SDK): XcodeGen, `xcodebuild build test` (unsigned), the UI tests again on the Release configuration, then a universal Release archive (must be SDK 14.x), ad-hoc signed, launch smoke (5 s with `-UITestFakeAPI`), zipped; uploaded as an artifact on pushes to `main` and tags |
+| `macos-app` | `macos-15` + Xcode 16 (forward-compat signal, no release artifact): `swift test`, XcodeGen, `xcodebuild build test`, the add-field UI tests on Release; on `main` also uploads a universal Debug build with `get-task-allow` (`MekariProject-debug-xcode16-<sha>`) for attaching lldb on a device |
+| `macos14-xcode16` | `macos-14` + the newest Xcode 16: a macOS-15-SDK app on a macOS 14 runtime, the combination that crashed v0.1.0. Release build, hosted tests + add-field UI tests; allowed to fail, not a release gate |
+| `release` | `v*` tags only: GitHub Release with `macos-xcode15`'s zip, install notes, the building toolchain (`DTXcode` / `DTSDKName`) and generated notes. Needs every job except `macos14-xcode16` |
 
 ## Installing (unsigned builds)
 Releases are universal (Apple Silicon + Intel) and need macOS 14 Sonoma or later. They're ad-hoc
 signed but not notarized, so macOS blocks the first launch until you allow it.
 
-1. Download `MekariProject-<version>.zip` from the
+1. **Delete any old copies first**: an earlier `MekariProject-*.zip` or `Mekari Project.app` in
+   Downloads. Otherwise Archive Utility unzips the new one as `Mekari Project 2.app`, and it's easy
+   to end up approving and running that copy instead.
+2. Download `MekariProject-<version>.zip` from the
    [latest release](https://github.com/aviandri/asana-clone-mac/releases/latest).
    Builds of `main` are also attached to each CI run as the `MekariProject-<sha>` artifact.
-2. Unzip it (double-click) and **move Mekari Project.app to Applications first**, then launch it
-   from there. A copy started from Downloads runs from a randomized read-only location (App
-   Translocation).
-3. If macOS says *"Mekari Project" can't be opened because Apple cannot check it for malicious
+3. Unzip it (double-click), then **drag Mekari Project.app into Applications in Finder** (replace
+   the old one if asked) and launch it from there. Don't use `mv` in Terminal: the moved app keeps
+   running from a randomized read-only location (App Translocation), like a copy started from
+   Downloads.
+4. If macOS says *"Mekari Project" can't be opened because Apple cannot check it for malicious
    software* (only **Show in Finder** / **OK**), click OK, then open **System Settings → Privacy &
    Security**, scroll to *"Mekari Project" was blocked…*, click **Open Anyway** and confirm.
    On macOS 14, **right-click the app → Open** → **Open** also works. Or clear the quarantine flag
@@ -109,14 +114,17 @@ signed but not notarized, so macOS blocks the first launch until you allow it.
    ```sh
    xattr -dr com.apple.quarantine "/Applications/Mekari Project.app"
    ```
-4. Delete any copy left in Downloads (the zip and the unzipped app), so that `open` and Spotlight
-   don't start the quarantined copy.
-5. Sign in with your Mekari Project server URL, email and password.
+5. Delete the zip and anything else left in Downloads, so that `open` and Spotlight don't start a
+   quarantined copy.
+6. Sign in with your Mekari Project server URL, email and password.
 
 The proper fix is Developer ID signing + notarization, which needs an Apple Developer account.
 
 ## Releasing
 Push a tag `vMAJOR.MINOR.PATCH` (or `vMAJOR.MINOR.PATCH-rc1` for a prerelease) on `main`; only the
 orchestrator tags. CI stamps the version (`MARKETING_VERSION` from the tag, build number = run
-number), builds and launch-smokes the universal app, and the `release` job creates a GitHub Release.
-The release has the zip attached and notes generated from the merged PR titles.
+number), builds and launch-smokes the universal app with Xcode 15.4 (macOS 14.5 SDK), and the
+`release` job creates a GitHub Release. The release has the zip attached and notes generated from
+the merged PR titles, plus the `DTXcode` / `DTSDKName` of the build. Releases are built against the
+macOS 14 SDK on purpose: v0.1.0, built with Xcode 16.4 against the macOS 15 SDK, crashed on Add task
+on macOS 14.
