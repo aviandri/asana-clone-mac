@@ -6,6 +6,9 @@ on:
     tags: ['v*']
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -86,7 +89,7 @@ jobs:
 
   macos-app:
     # The app target only builds on macOS: XcodeGen → build + test (unsigned), then a universal
-    # Release archive, ad-hoc signed and zipped (uploaded on main and tags).
+    # Release archive, ad-hoc signed, launch-smoked and zipped (uploaded on main and tags).
     runs-on: macos-15
     timeout-minutes: 30
     env:
@@ -102,16 +105,53 @@ jobs:
         run: |
           xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO build test
+      - name: Version
+        id: version
+        # Tags v1.2.3 / v1.2.3-rc1 stamp MARKETING_VERSION 1.2.3 and name the zip after the tag;
+        # other builds keep project.yml's version and use the short SHA. Build number = run number.
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.]+)?$ ]] \
+              || { echo "tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH[-suffix]"; exit 1; }
+            echo "marketing=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "label=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Archive (Release, universal)
+        env:
+          MARKETING: ${{ steps.version.outputs.marketing }}
         run: |
           xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
             -destination 'generic/platform=macOS' -archivePath build/MekariProject.xcarchive \
-            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO archive
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" ${MARKETING:+MARKETING_VERSION="$MARKETING"} archive
           APP="build/MekariProject.xcarchive/Products/Applications/Mekari Project.app"
           codesign --force --deep --sign - "$APP"
           codesign --verify --verbose=2 "$APP"
           lipo -archs "$APP/Contents/MacOS/Mekari Project" | tee /dev/stderr | grep -q 'x86_64 arm64\|arm64 x86_64'
-          ditto -c -k --keepParent "$APP" "build/MekariProject-${GITHUB_SHA::7}.zip"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"
+      - name: Launch smoke (Release app, fake API)
+        # Start the archived app for 5 s with the fake API and fail if it exits or leaves a crash report.
+        run: |
+          BIN="build/MekariProject.xcarchive/Products/Applications/Mekari Project.app/Contents/MacOS/Mekari Project"
+          REPORTS="$HOME/Library/Logs/DiagnosticReports"
+          find "$REPORTS" -iname '*Mekari*' -delete 2>/dev/null || true
+          "$BIN" -UITestFakeAPI > build/launch.log 2>&1 &
+          pid=$!
+          sleep 5
+          if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid"; echo "app exited within 5 s (status $?)"; cat build/launch.log; exit 1
+          fi
+          kill "$pid"; wait "$pid" 2>/dev/null || true
+          if find "$REPORTS" -iname '*Mekari*' 2>/dev/null | grep -q .; then
+            echo "crash report found:"; find "$REPORTS" -iname '*Mekari*' -exec head -40 {} \; ; exit 1
+          fi
+          echo "app stayed up for 5 s"
+      - name: Zip
+        run: |
+          ditto -c -k --keepParent "build/MekariProject.xcarchive/Products/Applications/Mekari Project.app" \
+            "build/MekariProject-${{ steps.version.outputs.label }}.zip"
       - name: Upload app
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
@@ -119,3 +159,26 @@ jobs:
           name: MekariProject-${{ github.sha }}
           path: build/MekariProject-*.zip
           retention-days: 30
+
+  release:
+    # v* tags only: a GitHub Release with the universal zip and notes generated from merged PRs.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-kit, linux-contract, macos-app]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: MekariProject-${{ github.sha }}
+          path: dist
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/*.zip -R "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Mekari Project ${GITHUB_REF_NAME#v}" "${prerelease[@]}" --generate-notes \
+            --notes "Universal (Apple Silicon + Intel), macOS 14+. Unsigned: right-click → Open the first time, or run \`xattr -dr com.apple.quarantine \"/Applications/Mekari Project.app\"\`. See the README for install steps."
