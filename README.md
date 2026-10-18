@@ -5,7 +5,7 @@ Native macOS (14+) client for Mekari Project, the company's internal work-manage
 - Spec: [`docs/SPEC-MAC.md`](docs/SPEC-MAC.md)
 - Backend API contract: `aviandri/asana-clone-be` → `docs/SPEC.md`
 
-Status: under construction (v1 scaffold).
+Status: v1 feature-complete; trial pre-release [`v0.1.0-rc1`](https://github.com/aviandri/asana-clone-mac/releases/tag/v0.1.0-rc1).
 
 ## Layout
 | Path | What |
