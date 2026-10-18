@@ -32,7 +32,7 @@ struct MyTasksView: View {
                         }
                     }
                     // Scoped to the task rows (not the List, so the add row and other reloads aren't
-                    // swept into the transaction): a completed row lingers ~700 ms, then collapses.
+                    // swept into the transaction): a completed row lingers briefly (TaskCache.lingerDuration), then collapses.
                     .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: scope.tasks.lingering)
                 }
             }

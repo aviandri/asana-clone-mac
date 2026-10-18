@@ -60,7 +60,7 @@ private struct BoardColumn: View {
                             .transition(reduceMotion ? .opacity : .asymmetric(insertion: .opacity, removal: .move(edge: .trailing).combined(with: .opacity)))
                         }
                     }
-                    // A completed card lingers ~700 ms (TaskCache), then slides out.
+                    // A completed card lingers briefly (TaskCache.lingerDuration), then slides out.
                     .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: scope.tasks.lingering)
                     if store.canEdit {
                         AddTaskRow { title in
