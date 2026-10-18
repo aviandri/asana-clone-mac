@@ -256,4 +256,19 @@ final class AppFlowUITests: XCTestCase {
         XCTAssertEqual(app.state, .runningForeground)
         title.typeKey(.escape, modifierFlags: [])
     }
+
+    /// #25 device QA: a click in the middle of an open checkbox completes the task. The open mark is a
+    /// ring; its inside must still be the button, not fall through to selecting the row.
+    @MainActor
+    func testClickingTheMiddleOfACheckboxCompletesInsteadOfSelecting() {
+        let app = launch()
+        let toggle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Mark ' AND label ENDSWITH ' complete'")).firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10), "no open task in My Tasks")
+        let label = toggle.label
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        // Completed: the "Mark … complete" button is gone (relabelled, then the row lingers and goes).
+        let same = app.buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
+        XCTAssertTrue(waitForNonExistence(of: same, timeout: 5), "the click didn't complete the task")
+        XCTAssertFalse(element(app, "task.inspector").exists, "the click selected the row instead")
+    }
 }

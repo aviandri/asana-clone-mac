@@ -21,9 +21,20 @@ struct CompletionCheckbox: View {
             action()
         } label: {
             CompletionMark(completed: completed, size: size)
+                .padding(3)
+                // The whole box is the target. The open mark is a stroked ring plus an invisible fill,
+                // and neither is hit-testable inside, so clicks fell through to the row (rc1 QA).
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!canEdit)
+        // A read-only checkbox still swallows its click: no row selection or double-click open.
+        .overlay {
+            if !canEdit {
+                Color.clear.contentShape(Rectangle()).onTapGesture {}
+            }
+        }
+        .padding(-3)
         .accessibilityLabel(completed ? "Mark \(title) incomplete" : "Mark \(title) complete")
         .onChange(of: completed) { _, new in CompletionExpectation.check(&expectation, completed: new, title: title) }
     }
