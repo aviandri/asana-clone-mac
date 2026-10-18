@@ -258,11 +258,13 @@ public enum ServerURL { public static func normalize(_ input: String) -> URL? } 
 public actor FakeMekariAPI: MekariAPI {
   public init(seed: FakeSeed = .demo, signedInAs email: String? = "alice@example.com")
   // Test knobs
-  public func failNext(_ path: FakeEndpoint, with error: APIError)   // e.g. .updateTask → validation error
+  public func failNext(_ endpoint: FakeEndpoint, with error: APIError)   // e.g. .updateTask → validation error
   public func setLatency(_ duration: Duration)                       // previews: .milliseconds(300)
   public var calls: [FakeCall] { get }                               // recorded requests, for assertions
   public func emit(_ event: APIEvent)                                // simulate 401 or lost access
-  public func addNotification(_ n: InboxNotification)                // drive the poller
+  public func addNotification(_ n: InboxNotification, for userID: String)   // drive the poller
+  public func removeMembership(userID: String, workspaceID: String)         // simulate lost access
+  public func currentTasks() -> [TaskItem]                                  // assert on the fake's state
 }
 public struct FakeSeed: Sendable { public static let demo: FakeSeed; public static let empty: FakeSeed }
 
