@@ -407,6 +407,8 @@ public enum DeepLinkResult: Equatable { case open(NavigationTarget), noAccess }
   public func project(_ id: String) -> ProjectStore        // cached per id
   public func taskDetail(_ id: String) -> TaskDetailStore  // cached per id; the ⌘O window reuses it
   public func userSearch() -> UserSearch                   // new instance each time
+  public func canEdit(task: TaskItem) -> Bool              // My Tasks checkboxes: personal/admin yes; project task iff its
+                                                           // project is in the sidebar and I'm not COMMENTER (fail closed)
   public func refresh() async                              // window focus: My Tasks + sidebar + inbox
 }
 ```

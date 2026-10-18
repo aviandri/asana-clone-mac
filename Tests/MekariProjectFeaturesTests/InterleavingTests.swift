@@ -355,5 +355,25 @@ final class ReReviewTests: XCTestCase {
       .filter { $0.sectionId == store.sections[0].id }.sorted { $0.position < $1.position }.map(\.id)
     XCTAssertEqual(store.taskIDs(in: store.sections[0].id), server, "the screen shows the server's order")
   }
+
+  @MainActor
+  func testScopeCanEditTaskFailsClosed() async throws {
+    let fake = demoFake()
+    let session = await signedInSession(fake)
+    let scope = try XCTUnwrap(session.scope)
+    let tasks = await fake.currentTasks()
+    let personal = try XCTUnwrap(tasks.first { $0.projectId == nil && $0.workspaceId == DemoIDs.mekari })
+    let editable = try XCTUnwrap(tasks.first { $0.projectId == DemoIDs.boardProject })
+    let readOnly = try XCTUnwrap(tasks.first { $0.projectId == DemoIDs.readOnlyProject })
+
+    XCTAssertTrue(scope.canEdit(task: personal))
+    XCTAssertFalse(scope.canEdit(task: editable), "sidebar not loaded yet: fail closed")
+    await scope.sidebar.load()
+    XCTAssertTrue(scope.canEdit(task: editable))
+    XCTAssertFalse(scope.canEdit(task: readOnly)) // alice is COMMENTER there
+
+    let admin = await signedInSession(demoFake(as: "admin@example.com"))
+    XCTAssertTrue(admin.scope?.canEdit(task: readOnly) ?? false)
+  }
 }
 

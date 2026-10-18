@@ -53,6 +53,16 @@ public final class WorkspaceScope: Identifiable {
     return store
   }
 
+  /// Whether I may edit `task` without opening it (My Tasks checkboxes): personal tasks and workspace
+  /// admins yes; a project task only if its project is in the sidebar and I'm not a COMMENTER there.
+  /// Fails closed: a project not (yet) loaded counts as read-only, like `TaskDetailStore.canEdit`.
+  public func canEdit(task: TaskItem) -> Bool {
+    guard let projectID = task.projectId else { return true }
+    if workspace.myRole == .admin { return true }
+    guard let project = sidebar.projects.first(where: { $0.id == projectID }) else { return false }
+    return project.myRole != .commenter
+  }
+
   public func userSearch() -> UserSearch {
     UserSearch(api: api, clock: clock)
   }
