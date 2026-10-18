@@ -44,7 +44,7 @@ public final class TaskCache {
     let assignee: UserSummary??
   }
 
-  public init(api: any MekariAPI, clock: any Clock<Duration> = ContinuousClock(), lingerDuration: Duration = .milliseconds(400)) {
+  public init(api: any MekariAPI, clock: any Clock<Duration> = ContinuousClock(), lingerDuration: Duration = .milliseconds(300)) {
     self.api = api
     self.clock = clock
     self.lingerDuration = lingerDuration
