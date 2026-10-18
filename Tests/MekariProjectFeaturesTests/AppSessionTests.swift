@@ -141,6 +141,7 @@ final class AppSessionTests: XCTestCase {
     async let userSwitch: Void = session.switchWorkspace(to: DemoIDs.mekari)
     await waitUntil("the switch POST is in flight") { await fake.parkedCount(.switchWorkspace) == 1 }
     // Meanwhile Acme access is revoked and an Acme-scoped load notices.
+    await stopPolling(session)
     await fake.removeMembership(userID: DemoIDs.alice, workspaceID: DemoIDs.acmePilot)
     await acmeScope?.myTasks.refresh()
     await fake.release(.switchWorkspace, all: true)
@@ -159,6 +160,7 @@ final class AppSessionTests: XCTestCase {
     let fake = demoFake()
     let session = await signedInSession(fake)
     await session.switchWorkspace(to: DemoIDs.acmePilot)
+    await stopPolling(session)
     await fake.removeMembership(userID: DemoIDs.alice, workspaceID: DemoIDs.acmePilot)
     await session.scope?.myTasks.refresh() // 404 with the header → .workspaceLost
     await settle()
@@ -191,6 +193,7 @@ final class AppSessionTests: XCTestCase {
     let fake = demoFake()
     let session = await signedInSession(fake)
     await session.switchWorkspace(to: DemoIDs.acmePilot)
+    await stopPolling(session)
     await fake.removeMembership(userID: DemoIDs.alice, workspaceID: DemoIDs.acmePilot)
     await fake.failNext(.me, with: .transport())
     await session.scope?.myTasks.refresh()          // 404 → recovery → /auth/me fails
@@ -212,6 +215,7 @@ final class AppSessionTests: XCTestCase {
     let fake = demoFake()
     let session = await signedInSession(fake)
     await session.switchWorkspace(to: DemoIDs.acmePilot)
+    await stopPolling(session)
     await fake.removeMembership(userID: DemoIDs.alice, workspaceID: DemoIDs.acmePilot)
     await fake.hold(.me)
     await session.scope?.myTasks.refresh()          // recovery starts, /auth/me parked
