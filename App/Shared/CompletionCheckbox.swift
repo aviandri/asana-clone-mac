@@ -34,6 +34,8 @@ struct CompletionMark: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        // keyframeAnimator's content closure is @Sendable: capture the value, not the environment.
+        let popScale = !reduceMotion
         ZStack {
             Circle()
                 .strokeBorder(Color.secondary, lineWidth: max(1, size * 0.08))
@@ -50,7 +52,7 @@ struct CompletionMark: View {
         .frame(width: size, height: size)
         .animation(reduceMotion ? .easeInOut(duration: 0.12) : .easeOut(duration: 0.22), value: completed)
         .keyframeAnimator(initialValue: 1.0, trigger: completed) { content, scale in
-            content.scaleEffect(reduceMotion ? 1 : scale)
+            content.scaleEffect(popScale ? scale : 1)
         } keyframes: { _ in
             SpringKeyframe(1.15, duration: 0.11, spring: .snappy)
             SpringKeyframe(1.0, duration: 0.2, spring: .bouncy)
