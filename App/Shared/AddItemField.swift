@@ -123,8 +123,26 @@ final class UndoFreeTextField: NSTextField {
 }
 
 /// Hands its control a private field editor with undo off, instead of the window's shared one.
+/// AppKit's editor setup copies the cell's `allowsUndo` onto the editor (default true), so the cell
+/// says no too, and the setup is overridden to keep it off.
 final class UndoFreeTextFieldCell: NSTextFieldCell {
     private(set) var editor: NSTextView?
+
+    override init(textCell string: String) {
+        super.init(textCell: string)
+        allowsUndo = false
+    }
+
+    required init(coder: NSCoder) {
+        super.init(coder: coder)
+        allowsUndo = false
+    }
+
+    override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
+        let text = super.setUpFieldEditorAttributes(textObj)
+        (text as? NSTextView)?.allowsUndo = false
+        return text
+    }
 
     override func fieldEditor(for controlView: NSView) -> NSTextView? {
         if let editor { return editor }

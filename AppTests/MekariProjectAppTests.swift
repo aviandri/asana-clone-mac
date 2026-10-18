@@ -165,8 +165,8 @@ final class MekariProjectAppTests: XCTestCase {
         let other = NSTextField(frame: NSRect(x: 10, y: 50, width: 200, height: 22))
         window.contentView?.addSubview(field)
         window.contentView?.addSubview(other)
+        // (A fresh shared editor has undo off until a cell sets it up, so only check it after use.)
         let shared = try XCTUnwrap(window.fieldEditor(true, for: nil) as? NSTextView)
-        XCTAssertTrue(shared.allowsUndo)
 
         XCTAssertTrue(window.makeFirstResponder(field))
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
