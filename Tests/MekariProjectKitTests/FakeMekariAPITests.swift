@@ -187,4 +187,47 @@ final class FakeMekariAPITests: XCTestCase {
     let me = try await api.me()
     XCTAssertNil(me.currentWorkspace)
   }
+
+  func testMovingATaskBetweenProjectsFollowsTheBERules() async throws {
+    let api = fake()
+    await api.setWorkspace(DemoIDs.mekari)
+    let task = try await api.projectTasks(DemoIDs.boardProject, completed: false).first { $0.title == "Tablet layout" }!
+    XCTAssertNotNil(task.sectionId)
+
+    // Into a project in another workspace (alice can see it as Acme Pilot's ADMIN): 400.
+    let crossWorkspace = await code { _ = try await api.updateTask(task.id, TaskChanges(projectId: .set(DemoIDs.pilotProject))) }
+    XCTAssertEqual(crossWorkspace, .validation)
+    // Into a project where alice is COMMENTER: 403.
+    let readOnly = await code { _ = try await api.updateTask(task.id, TaskChanges(projectId: .set(DemoIDs.readOnlyProject))) }
+    XCTAssertEqual(readOnly, .forbidden)
+    // Into a project she can't see: 404.
+    let hidden = await code { _ = try await api.updateTask(task.id, TaskChanges(projectId: .set(DemoIDs.campaignProject))) }
+    XCTAssertEqual(hidden, .notFound)
+    // Subtasks move with their parent, never alone.
+    let subtask = try await api.task(DemoIDs.taskWithStories).subtasks[0]
+    let alone = await code { _ = try await api.updateTask(subtask.id, TaskChanges(projectId: .clear)) }
+    XCTAssertEqual(alone, .validation)
+
+    // Becoming a personal task drops the old section; the parent's subtasks follow.
+    let personal = try await api.updateTask(DemoIDs.taskWithStories, TaskChanges(projectId: .clear))
+    XCTAssertNil(personal.projectId)
+    XCTAssertNil(personal.sectionId)
+    XCTAssertTrue(personal.subtasks.allSatisfy { $0.projectId == nil })
+  }
+
+  func testUnassigningRecordsActivity() async throws {
+    let api = fake()
+    _ = try await api.updateTask(DemoIDs.taskWithStories, TaskChanges(assigneeId: .clear))
+    let stories = try await api.stories(taskID: DemoIDs.taskWithStories)
+    guard case .activity(let last)? = stories.last else { return XCTFail("no activity") }
+    XCTAssertEqual(last.type, .unassigned)
+    XCTAssertEqual(last.data["assigneeId"]?.stringValue, DemoIDs.alice)
+  }
+
+  func testMentioningANonMemberIs400() async throws {
+    let api = fake()
+    let guestSummary = UserSummary(id: DemoIDs.guest, name: "Gita Guest", email: DemoIDs.guestEmail, avatarColor: "#aa62e3")
+    let result = await code { _ = try await api.addComment(taskID: DemoIDs.taskWithStories, body: "hi \(Mentions.token(for: guestSummary))") }
+    XCTAssertEqual(result, .validation) // the guest isn't in Mekari
+  }
 }

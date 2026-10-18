@@ -2,53 +2,126 @@ import Foundation
 
 // MARK: - Enums (BE SPEC §5, §12)
 
-public enum WorkspaceRole: String, Codable, Sendable, Hashable, CaseIterable {
-  case admin = "ADMIN", member = "MEMBER", guest = "GUEST"
-}
-
-public enum ProjectRole: String, Codable, Sendable, Hashable, CaseIterable {
-  case owner = "OWNER", editor = "EDITOR", commenter = "COMMENTER"
-}
-
-public enum ProjectPrivacy: String, Codable, Sendable, Hashable, CaseIterable {
-  case `public` = "PUBLIC", team = "TEAM", `private` = "PRIVATE"
-}
-
-public enum ProjectView: String, Codable, Sendable, Hashable, CaseIterable {
-  case list = "LIST", board = "BOARD", calendar = "CALENDAR"
-}
-
-public enum Priority: String, Codable, Sendable, Hashable, CaseIterable {
-  case none = "NONE", low = "LOW", medium = "MEDIUM", high = "HIGH"
-}
-
-/// A string enum that decodes unknown values to `.other(raw)` instead of failing, so a new BE value
-/// never breaks the app.
+/// A string enum that decodes unknown values to `.other(raw)` instead of failing, so one new BE value
+/// never breaks a whole list. `allCases` lists only the known cases (for pickers).
 public protocol OpenEnum: Codable, Sendable, Hashable {
-  static var known: [String: Self] { get }
+  static var allCases: [Self] { get }
   static func other(_ raw: String) -> Self
   var rawValue: String { get }
 }
 
 extension OpenEnum {
+  public init(rawValue: String) {
+    self = Self.allCases.first { $0.rawValue == rawValue } ?? Self.other(rawValue)
+  }
+
   public init(from decoder: Decoder) throws {
-    let raw = try decoder.singleValueContainer().decode(String.self)
-    self = Self.known[raw] ?? Self.other(raw)
+    self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
   }
 
   public func encode(to encoder: Encoder) throws {
     var container = encoder.singleValueContainer()
     try container.encode(rawValue)
   }
+
+  /// False for `.other`.
+  public var isKnown: Bool { Self.allCases.contains(self) }
 }
 
-public enum NotificationType: OpenEnum {
-  case assigned, commented, completed, mentioned
+/// Unknown roles get no extra rights: `isAdmin` and `isGuest` are both false.
+public enum WorkspaceRole: OpenEnum, CaseIterable {
+  case admin, member, guest
+  /// A value this build doesn't know (the BE added it later).
   case other(String)
 
-  public static let known: [String: NotificationType] = [
-    "ASSIGNED": .assigned, "COMMENTED": .commented, "COMPLETED": .completed, "MENTIONED": .mentioned,
-  ]
+  public static let allCases: [WorkspaceRole] = [.admin, .member, .guest]
+
+  public var rawValue: String {
+    switch self {
+    case .admin: return "ADMIN"
+    case .member: return "MEMBER"
+    case .guest: return "GUEST"
+    case .other(let raw): return raw
+    }
+  }
+}
+
+public enum ProjectRole: OpenEnum, CaseIterable {
+  case owner, editor, commenter
+  /// A value this build doesn't know (the BE added it later).
+  case other(String)
+
+  public static let allCases: [ProjectRole] = [.owner, .editor, .commenter]
+
+  public var rawValue: String {
+    switch self {
+    case .owner: return "OWNER"
+    case .editor: return "EDITOR"
+    case .commenter: return "COMMENTER"
+    case .other(let raw): return raw
+    }
+  }
+}
+
+public enum ProjectPrivacy: OpenEnum, CaseIterable {
+  case `public`, team, `private`
+  /// A value this build doesn't know (the BE added it later).
+  case other(String)
+
+  public static let allCases: [ProjectPrivacy] = [.`public`, .team, .`private`]
+
+  public var rawValue: String {
+    switch self {
+    case .`public`: return "PUBLIC"
+    case .team: return "TEAM"
+    case .`private`: return "PRIVATE"
+    case .other(let raw): return raw
+    }
+  }
+}
+
+/// Unknown views open as a list.
+public enum ProjectView: OpenEnum, CaseIterable {
+  case list, board, calendar
+  /// A value this build doesn't know (the BE added it later).
+  case other(String)
+
+  public static let allCases: [ProjectView] = [.list, .board, .calendar]
+
+  public var rawValue: String {
+    switch self {
+    case .list: return "LIST"
+    case .board: return "BOARD"
+    case .calendar: return "CALENDAR"
+    case .other(let raw): return raw
+    }
+  }
+}
+
+public enum Priority: OpenEnum, CaseIterable {
+  case none, low, medium, high
+  /// A value this build doesn't know (the BE added it later).
+  case other(String)
+
+  public static let allCases: [Priority] = [.none, .low, .medium, .high]
+
+  public var rawValue: String {
+    switch self {
+    case .none: return "NONE"
+    case .low: return "LOW"
+    case .medium: return "MEDIUM"
+    case .high: return "HIGH"
+    case .other(let raw): return raw
+    }
+  }
+}
+
+public enum NotificationType: OpenEnum, CaseIterable {
+  case assigned, commented, completed, mentioned
+  /// A value this build doesn't know (the BE added it later).
+  case other(String)
+
+  public static let allCases: [NotificationType] = [.assigned, .commented, .completed, .mentioned]
 
   public var rawValue: String {
     switch self {
@@ -61,16 +134,12 @@ public enum NotificationType: OpenEnum {
   }
 }
 
-public enum ActivityType: OpenEnum {
-  case created, completed, reopened, assigned, unassigned, dueDateChanged, movedSection, renamed
-  case priorityChanged, descriptionChanged
+public enum ActivityType: OpenEnum, CaseIterable {
+  case created, completed, reopened, assigned, unassigned, dueDateChanged, movedSection, renamed, priorityChanged, descriptionChanged
+  /// A value this build doesn't know (the BE added it later).
   case other(String)
 
-  public static let known: [String: ActivityType] = [
-    "CREATED": .created, "COMPLETED": .completed, "REOPENED": .reopened, "ASSIGNED": .assigned,
-    "UNASSIGNED": .unassigned, "DUE_DATE_CHANGED": .dueDateChanged, "MOVED_SECTION": .movedSection,
-    "RENAMED": .renamed, "PRIORITY_CHANGED": .priorityChanged, "DESCRIPTION_CHANGED": .descriptionChanged,
-  ]
+  public static let allCases: [ActivityType] = [.created, .completed, .reopened, .assigned, .unassigned, .dueDateChanged, .movedSection, .renamed, .priorityChanged, .descriptionChanged]
 
   public var rawValue: String {
     switch self {
@@ -118,7 +187,7 @@ public struct PickableUser: Sendable, Hashable, Identifiable {
 
   public var id: String { user.id }
   public var isGuest: Bool { role == .guest }
-  public subscript<T>(dynamicMember keyPath: KeyPath<UserSummary, T>) -> T { user[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: KeyPath<UserSummary, T> & Sendable) -> T { user[keyPath: keyPath] }
 }
 
 extension PickableUser: Codable {
@@ -197,7 +266,7 @@ public struct Me: Sendable, Hashable {
     self.workspaces = workspaces
   }
 
-  public subscript<T>(dynamicMember keyPath: KeyPath<User, T>) -> T { user[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: KeyPath<User, T> & Sendable) -> T { user[keyPath: keyPath] }
 }
 
 extension Me: Codable {
@@ -319,7 +388,7 @@ public struct ProjectDetail: Sendable, Hashable, Identifiable {
   }
 
   public var id: String { project.id }
-  public subscript<T>(dynamicMember keyPath: KeyPath<Project, T>) -> T { project[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: KeyPath<Project, T> & Sendable) -> T { project[keyPath: keyPath] }
 }
 
 extension ProjectDetail: Codable {
@@ -453,7 +522,7 @@ public struct TaskDetail: Sendable, Hashable, Identifiable {
   }
 
   public var id: String { task.id }
-  public subscript<T>(dynamicMember keyPath: KeyPath<TaskItem, T>) -> T { task[keyPath: keyPath] }
+  public subscript<T>(dynamicMember keyPath: KeyPath<TaskItem, T> & Sendable) -> T { task[keyPath: keyPath] }
 }
 
 extension TaskDetail: Codable {

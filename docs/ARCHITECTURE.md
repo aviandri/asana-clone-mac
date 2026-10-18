@@ -27,15 +27,15 @@ Two names avoid clashes with Swift and Foundation: **`TaskItem`** (a BE `Task`; 
 concurrency) and **`InboxNotification`** (a BE `Notification`; Foundation has `Notification`).
 
 ```swift
-public enum WorkspaceRole: String, Codable, Sendable, CaseIterable { case admin = "ADMIN", member = "MEMBER", guest = "GUEST" }
-public enum ProjectRole: String, Codable, Sendable { case owner = "OWNER", editor = "EDITOR", commenter = "COMMENTER" }
-public enum ProjectPrivacy: String, Codable, Sendable { case `public` = "PUBLIC", team = "TEAM", `private` = "PRIVATE" }
-public enum ProjectView: String, Codable, Sendable { case list = "LIST", board = "BOARD", calendar = "CALENDAR" }
-public enum Priority: String, Codable, Sendable, CaseIterable { case none = "NONE", low = "LOW", medium = "MEDIUM", high = "HIGH" }
-
-/// Open enums: unknown values decode to `.other(raw)` instead of failing.
-public enum NotificationType: Codable, Sendable, Hashable { case assigned, commented, completed, mentioned, other(String) }
-public enum ActivityType: Codable, Sendable, Hashable {
+/// All BE enums are OPEN: unknown values decode to `.other(raw)` instead of failing a whole list
+/// (`allCases` lists the known ones, for pickers; switches need a `default`/`.other` branch).
+public enum WorkspaceRole: OpenEnum { case admin, member, guest, other(String) }     // .other: neither admin nor guest
+public enum ProjectRole: OpenEnum { case owner, editor, commenter, other(String) }
+public enum ProjectPrivacy: OpenEnum { case `public`, team, `private`, other(String) }
+public enum ProjectView: OpenEnum { case list, board, calendar, other(String) }      // unknown → list
+public enum Priority: OpenEnum { case none, low, medium, high, other(String) }
+public enum NotificationType: OpenEnum { case assigned, commented, completed, mentioned, other(String) }
+public enum ActivityType: OpenEnum {
   case created, completed, reopened, assigned, unassigned, dueDateChanged, movedSection, renamed,
        priorityChanged, descriptionChanged, other(String)
 }
@@ -67,7 +67,7 @@ public struct TaskItem {
 public struct TaskDetail   { task: TaskItem; followers: [UserSummary]; subtasks: [TaskItem]; parent: TaskParentRef? }  // flat JSON
 public struct TaskParentRef{ id, title: String }
 
-public enum Story: Identifiable { case comment(Comment), activity(Activity) }   // discriminated by "kind"
+public enum Story: Identifiable { case comment(Comment), activity(Activity) }   // discriminated by "kind"; unknown kinds are skipped in feeds
 public struct Comment      { id: String; author: UserSummary; body: String; createdAt: Date; editedAt: Date?
                              var segments: [Mentions.Segment] }   // parsed body
 public struct Activity     { id: String; actor: UserSummary; type: ActivityType; data: JSONValue; createdAt: Date }
@@ -233,6 +233,11 @@ public struct URLSessionTransport: HTTPTransport {      // ephemeral URLSession:
   `/users`, `/projects`, `/me/tasks`, `/tasks` (POST), `/notifications`, `/notifications/read-all`,
   `/search`, …) while a header is set emits `.workspaceLost`, then throws as usual.
 - Errors decode the BE envelope into `APIError`. A non-JSON error body → `.unknown("HTTP <status>")`.
+  Decoding failures name the coding path (`$.data[0].dueDate: Expected YYYY-MM-DD…`).
+- **401 race:** only a 401 for the token still stored ends the session; a late 401 for an older token
+  (poller, another window) is ignored. Login and logout never emit `.unauthorized`.
+- **Cancellation:** cancelling the calling task cancels the `URLSessionTask` and throws
+  `CancellationError` (never `APIError`); Features treat it as "no result", not an error.
 - No retries or caching in v1.
 
 ### TokenStore & settings
@@ -240,10 +245,14 @@ public struct URLSessionTransport: HTTPTransport {      // ephemeral URLSession:
 ```swift
 public protocol TokenStore: Sendable { func load() -> String?; func save(_ token: String); func clear() }
 public final class InMemoryTokenStore: TokenStore { public init(token: String? = nil) }
+/// Reads its backend ONCE (init), then serves from memory; writes through. Save = update → add if
+/// missing → delete + add on any other failure. Logs status codes only, never the token.
+public final class CachedTokenStore: TokenStore { public init(backend: SecretBackend, log: @escaping @Sendable (String) -> Void = { _ in }) }
+public protocol SecretBackend: Sendable { read/update/add/delete returning OSStatus-style Int32 }
 #if canImport(Security)
-public final class KeychainTokenStore: TokenStore {   // kSecClassGenericPassword, service "com.mekari.project",
-  public init(account: String)                       // account = server host, so a server change starts signed out
-}
+public final class KeychainTokenStore: TokenStore {    // CachedTokenStore over the Keychain item
+  public init(account: String)                        // service "com.mekari.project"; the app uses a fixed account ("session"):
+}                                                     // one server per install, sign out to change it
 #endif
 
 public protocol ServerSettings: AnyObject, Sendable { var serverURL: URL? { get set } }
