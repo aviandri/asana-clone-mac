@@ -355,6 +355,7 @@ public enum NavigationTarget: Hashable, Sendable { case task(id: String, project
   public private(set) var scope: WorkspaceScope?      // the current workspace's stores; nil = signed out or no workspace
   public private(set) var generation: Int             // bumps when a switch commits or lost access resets → `.task(id: generation)`
   public private(set) var notice: String?             // e.g. "Switched to Acme Pilot", "You no longer have access to X"
+  public private(set) var isSwitching: Bool           // a switch or lost-access recovery is queued/running: show progress, hold edits
   public let settings: ServerSettings
 
   // Workspaces
@@ -406,6 +407,8 @@ public enum DeepLinkResult: Equatable { case open(NavigationTarget), noAccess }
   public func project(_ id: String) -> ProjectStore        // cached per id
   public func taskDetail(_ id: String) -> TaskDetailStore  // cached per id; the ⌘O window reuses it
   public func userSearch() -> UserSearch                   // new instance each time
+  public func canEdit(task: TaskItem) -> Bool              // My Tasks checkboxes: personal/admin yes; project task iff its
+                                                           // project is in the sidebar and I'm not COMMENTER (fail closed)
   public func refresh() async                              // window focus: My Tasks + sidebar + inbox
 }
 ```
@@ -420,7 +423,7 @@ public enum DeepLinkResult: Equatable { case open(NavigationTarget), noAccess }
   public func upsert(_ detail: TaskDetail)
   public func remove(_ id: String)
   /// Applies `changes` locally at once, PATCHes, then stores the server's TaskDetail; reverts on error.
-  public func update(_ id: String, _ changes: TaskChanges) async throws   // always APIError
+  public func update(_ id: String, _ changes: TaskChanges, assignee: UserSummary?? = .none) async throws   // always APIError
 }
 ```
 
@@ -489,7 +492,7 @@ public func clearError()
 public let taskID: String
 public var task: TaskDetail? { get }                 // from TaskCache
 public private(set) var stories: [Story]             // oldest first; Comment.segments is pre-parsed
-public var canEdit: Bool { get }
+public var canEdit: Bool { get }                     // false until the project role is known (and if its lookup fails)
 public private(set) var phase: LoadState
 public private(set) var lastError: APIError?
 public let composer: CommentComposer
@@ -604,3 +607,39 @@ public func submit() async                           // personal task assigned t
    and tell the other side.
 5. `TaskCache` is one observed dictionary, so any task edit re-renders the visible rows. That's fine at v1
    sizes; if profiling says otherwise, switch to per-task observable boxes behind the same subscript.
+6. **Added in PR 3 (additive only; the frozen names are unchanged):**
+   - `TaskCache.update(…, assignee:)` shows a new assignee before the server answers.
+   - Stores that need "today" take `now: () -> Date` next to `calendar` (`MyTasksStore`, `WorkspaceScope`,
+     `AppSession`).
+   - Extra read-only conveniences: `AppSession.me`, `AppSession.SignInError.message` (SPEC-MAC §5 copy),
+     `TaskDetailStore.isFollowing`, `ProjectStore.hasUnsectionedTasks`, `SearchStore.lastError`,
+     `QuickAddModel.canSubmit`, `CommentComposer.lastError` / `clearError()`, `DueBucket.title`,
+     `NotificationPoller.mode` / `isRunning`.
+   - `LocalNotice` is nested: `NotificationPoller.LocalNotice` (also `Identifiable`).
+   - The scaffold's `AppModel` (and Kit's `ServerConfiguration`) stay until the app shell (PR 4) moves to
+     `AppSession`; PR 4 deletes them.
+7. **Concurrency rules (PR #4 review):**
+   - `TaskCache` shows *server-confirmed + edits in flight, replayed in order*. A failed edit drops only
+     itself. Server copies older than the confirmed one (`updatedAt`) are ignored, so a slow list load
+     can't undo a drag. `hasPendingEdits(id)`.
+   - Workspace switches and lost-access recovery run one at a time. A switch superseded before it
+     starts is skipped before its POST, so the app and the server's `lastWorkspaceId` both end on the
+     newest choice. Recovery never cancels a user's switch.
+   - Loads drop a response only when something newer has already been applied. `CancellationError` is
+     never shown as an error, and a cancelled first load goes back to `.idle`.
+   - Renumbering fetches the whole section (completed tasks too) and reloads the project if it fails.
+   - The composer keeps text typed while a comment is sending. A failed project-role lookup means
+     read-only. `UserSearch.lastError`.
+   - `FakeMekariAPI.hold(_:)` / `release(_:all:newest:)` / `parkedCount(_:)` let tests order requests
+     deterministically; a parked call that gets cancelled throws `CancellationError`.
+8. **Re-review additions (PR #4):**
+   - Lost-access recovery never clears the header. Until `adopt` swaps header and scope together, both
+     still name the lost workspace, so requests 404 instead of showing another workspace's data under
+     its label. If recovery fails, the notice stays and the next scoped request (focus) retries.
+   - `AppSession.isSwitching` is true while any switch or recovery is queued or running.
+   - `TaskDetailStore.canEdit` is false until the project role is known.
+   - `TaskCache.remove` leaves a tombstone, so later copies never bring a deleted task back.
+   - Renumbering: every PATCH is tried, the failed ones are retried once, and if any still fail the
+     project reloads and `lastError` says "Couldn't reorder; try again".
+   - My Tasks, Project and Inbox loads all use "apply unless something newer already landed".
+
