@@ -21,11 +21,14 @@ struct TaskWindowView: View {
             if case .restoring = session.state {
                 ProgressView("Signing in…")
             } else if let ref, let scope = session.scope, scope.id == ref.workspaceID {
-                TaskInspectorView(scope: scope, store: scope.taskDetail(ref.taskID), onOpenTask: { id in
+                TaskInspectorView(session: session, scope: scope, store: scope.taskDetail(ref.taskID), onOpenTask: { id in
                     self.ref = TaskWindowRef(workspaceID: ref.workspaceID, taskID: id)
                 })
                 .id("\(scope.id)/\(ref.taskID)")
                 .disabled(session.isSwitching)
+                // ⌘O / ⇧⌘O act on this window's task.
+                .focusedSceneValue(\.selectedTaskID, ref.taskID)
+                .focusedSceneValue(\.currentProjectID, scope.tasks[ref.taskID]?.projectId)
                 .navigationTitle(scope.tasks[ref.taskID]?.title ?? "Task")
             } else if let ref, session.scope != nil {
                 OtherWorkspaceView(session: session, workspaceID: ref.workspaceID)

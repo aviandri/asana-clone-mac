@@ -5,6 +5,7 @@ import SwiftUI
 /// The task inspector (SPEC-MAC §5): every v1 field editable in place, subtasks, followers,
 /// comments and activity with a composer. Text fields commit on Return or when focus leaves.
 struct TaskInspectorView: View {
+    let session: AppSession
     let scope: WorkspaceScope
     @Bindable var store: TaskDetailStore
     /// Open another task (subtask / parent) in the same inspector or window.
@@ -19,6 +20,7 @@ struct TaskInspectorView: View {
                         header(task)
                         fields(task)
                         DescriptionEditor(text: task.description ?? "", canEdit: store.canEdit) { text in
+                            guard canCommit else { return }
                             Task { await store.setDescription(text.isEmpty ? nil : text) }
                         }
                         SubtasksSection(store: store, subtasks: task.subtasks, onOpenTask: onOpenTask)
@@ -48,6 +50,12 @@ struct TaskInspectorView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("task.inspector")
         .task { await store.load() }
+    }
+
+    /// Commits from onDisappear can fire while a workspace switch replaces the scope; by then requests
+    /// carry the new workspace's header, so a late save for this task is dropped instead.
+    private var canCommit: Bool {
+        !session.isSwitching && session.scope?.id == scope.id
     }
 
     @ViewBuilder private func header(_ task: TaskDetail) -> some View {
@@ -82,6 +90,7 @@ struct TaskInspectorView: View {
             CommitTextField(value: task.title, placeholder: "Task name", font: .title2.weight(.semibold), canEdit: store.canEdit) { title in
                 let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return false } // an empty name reverts
+                guard canCommit else { return false } // mid-switch: revert rather than pretend it saved
                 Task { await store.setTitle(trimmed) }
                 return true
             }

@@ -5,6 +5,8 @@ import SwiftUI
 /// Sign-in, the main split view, or "no workspace", depending on the session.
 struct RootView: View {
     let session: AppSession
+    @Bindable var router: AppRouter
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Group {
@@ -17,7 +19,7 @@ struct RootView: View {
             case .signedIn:
                 if let scope = session.scope {
                     // A new scope (workspace switch or lost access) gets fresh view state.
-                    MainView(session: session, scope: scope)
+                    MainView(session: session, scope: scope, router: router)
                         .id(scope.id)
                 } else {
                     NoWorkspaceView(session: session)
@@ -33,6 +35,12 @@ struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: session.notice)
+        .alert("Can't Open", isPresented: Binding(get: { router.alert != nil }, set: { if !$0 { router.alert = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(router.alert ?? "")
+        }
+        .onAppear { router.openMainWindow = { openWindow(id: WindowID.main) } }
         .task(id: session.notice) {
             guard let notice = session.notice else { return }
             // VoiceOver users hear the toast too.
