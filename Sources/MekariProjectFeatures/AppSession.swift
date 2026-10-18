@@ -55,7 +55,8 @@ public final class WorkspaceScope: Identifiable {
   /// One store per task; the ⌘O window reuses the inspector's.
   public func taskDetail(_ id: String) -> TaskDetailStore {
     if let store = details[id] { return store }
-    let store = TaskDetailStore(api: api, tasks: tasks, taskID: id, me: me, workspaceRole: workspace.myRole, clock: clock)
+    let store = TaskDetailStore(api: api, tasks: tasks, taskID: id, me: me, workspaceRole: workspace.myRole, clock: clock,
+                                knownProject: { [weak self] projectID in self?.sidebar.projects.first { $0.id == projectID } })
     details[id] = store
     return store
   }
