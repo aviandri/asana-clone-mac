@@ -4,11 +4,20 @@ import SwiftUI
 
 @main
 struct MekariProjectApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var session: AppSession
+    @State private var router: AppRouter
+    @AppStorage(SettingsKey.showInMenuBar) private var showInMenuBar = true
 
     init() {
         let session = AppBootstrap.makeSession()
+        let router = AppRouter()
         _session = State(initialValue: session)
+        _router = State(initialValue: router)
+        let notifier = LocalNotifier.shared
+        notifier.isDisabled = AppBootstrap.isUITest()
+        // A banner click opens its task, switching workspace if needed (like a deep link).
+        notifier.onOpenTask = { id in Task { await router.follow(.task(id: id), in: session) } }
         // Once per launch, at the App level: a task window restored on its own needs a session too.
         Task { await session.start() }
     }
@@ -16,16 +25,24 @@ struct MekariProjectApp: App {
     var body: some Scene {
         // One main window in v1 (SPEC-MAC §4: one current workspace per app).
         Window("Mekari Project", id: WindowID.main) {
-            RootView(session: session)
+            RootView(session: session, router: router)
         }
         .defaultSize(width: 1120, height: 720)
-        .commands { AppCommands(session: session) }
+        .commands { AppCommands(session: session, router: router) }
 
         // ⌘O / double-click: a task in its own window, sharing the scope's TaskDetailStore.
         WindowGroup("Task", id: WindowID.task, for: TaskWindowRef.self) { $ref in
             TaskWindowView(session: session, ref: $ref)
         }
         .defaultSize(width: 520, height: 700)
+
+        // Unread count, due today / overdue, quick add (SPEC-MAC §5). "Show in menu bar" in Settings.
+        MenuBarExtra(isInserted: $showInMenuBar) {
+            MenuBarContent(session: session, router: router)
+        } label: {
+            MenuBarLabel(session: session, router: router)
+        }
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView(session: session)
@@ -45,8 +62,12 @@ enum AppBootstrap {
     static let uiTestArgument = "-UITestFakeAPI"
     static let uiTestSignedOutArgument = "-UITestSignedOut"
 
+    static func isUITest(arguments: [String] = ProcessInfo.processInfo.arguments) -> Bool {
+        arguments.contains(uiTestArgument)
+    }
+
     static func makeSession(arguments: [String] = ProcessInfo.processInfo.arguments) -> AppSession {
-        if arguments.contains(uiTestArgument) {
+        if isUITest(arguments: arguments) {
             return AppSession.uiTest(signedIn: !arguments.contains(uiTestSignedOutArgument))
         }
         let settings = UserDefaultsServerSettings()

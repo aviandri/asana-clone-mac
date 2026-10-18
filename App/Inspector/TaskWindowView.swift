@@ -21,7 +21,7 @@ struct TaskWindowView: View {
             if case .restoring = session.state {
                 ProgressView("Signing in…")
             } else if let ref, let scope = session.scope, scope.id == ref.workspaceID {
-                TaskInspectorView(scope: scope, store: scope.taskDetail(ref.taskID), onOpenTask: { id in
+                TaskInspectorView(session: session, scope: scope, store: scope.taskDetail(ref.taskID), onOpenTask: { id in
                     self.ref = TaskWindowRef(workspaceID: ref.workspaceID, taskID: id)
                 })
                 .id("\(scope.id)/\(ref.taskID)")

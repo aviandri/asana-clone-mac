@@ -5,6 +5,8 @@ import SwiftUI
 /// Sign-in, the main split view, or "no workspace", depending on the session.
 struct RootView: View {
     let session: AppSession
+    @Bindable var router: AppRouter
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Group {
@@ -17,7 +19,7 @@ struct RootView: View {
             case .signedIn:
                 if let scope = session.scope {
                     // A new scope (workspace switch or lost access) gets fresh view state.
-                    MainView(session: session, scope: scope)
+                    MainView(session: session, scope: scope, router: router)
                         .id(scope.id)
                 } else {
                     NoWorkspaceView(session: session)
@@ -33,6 +35,26 @@ struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: session.notice)
+        // mekariproject://task/<id>, mekariproject://project/<id> (SPEC-MAC §5).
+        .onOpenURL { url in
+            guard let link = DeepLink(url: url) else { return }
+            Task { await router.follow(link, in: session) }
+        }
+        .alert("Can't Open", isPresented: Binding(get: { router.alert != nil }, set: { if !$0 { router.alert = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(router.alert ?? "")
+        }
+        .onAppear { router.openMainWindow = { openWindow(id: WindowID.main) } }
+        // Each workspace scope: start on My Tasks, and turn new inbox items into banners.
+        .onChange(of: session.scope?.id, initial: true) { _, new in
+            router.scopeChanged(to: new)
+            session.scope?.poller.onNew = { notices in LocalNotifier.shared.post(notices) }
+        }
+        // Ask for notification permission on the first sign-in (once per install).
+        .onChange(of: session.me?.id) { _, id in
+            if id != nil { LocalNotifier.shared.requestPermissionIfNeeded() }
+        }
         .task(id: session.notice) {
             guard let notice = session.notice else { return }
             // VoiceOver users hear the toast too.

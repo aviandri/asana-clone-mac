@@ -17,7 +17,9 @@ extension FocusedValues {
 /// work from anywhere in the main window.
 struct AppCommands: Commands {
     let session: AppSession
+    let router: AppRouter
     @FocusedValue(\.selectedTaskID) private var selectedTaskID
+    @FocusedValue(\.currentProjectID) private var currentProjectID
     @Environment(\.openWindow) private var openWindow
 
     private var signedIn: Bool {
@@ -40,6 +42,25 @@ struct AppCommands: Commands {
             Button("Refresh") { Task { await session.scope?.refresh() } }
                 .keyboardShortcut("r")
                 .disabled(session.scope == nil)
+        }
+
+        CommandGroup(after: .textEditing) {
+            Button("Search…") {
+                router.openMainWindow()
+                router.showSearch = true
+            }
+            .keyboardShortcut("k")
+            .disabled(session.scope == nil)
+        }
+
+        CommandGroup(after: .saveItem) {
+            Button("Open in Browser") {
+                if let url = BrowserLinks.url(session: session, taskID: selectedTaskID, projectID: currentProjectID) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+            .disabled(session.scope == nil)
         }
 
         CommandMenu("Workspace") {

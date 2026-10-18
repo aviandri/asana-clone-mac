@@ -31,6 +31,7 @@ struct SidebarView: View {
                             .frame(width: 9, height: 9)
                     }
                     .tag(SidebarItem.project(project.id))
+                    .accessibilityIdentifier("sidebar.project.\(project.id)")
                 }
                 if scope.sidebar.projects.isEmpty, scope.sidebar.phase == .loaded {
                     Text(session.isGuest ? "No projects shared with you yet" : "No projects yet")
