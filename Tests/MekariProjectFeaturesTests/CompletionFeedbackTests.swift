@@ -56,7 +56,7 @@ final class CompletionFeedbackTests: XCTestCase {
     XCTAssertEqual(board.taskIDs(in: board.sections[0].id), column, "stays in place on the board")
 
     let linger = scope.tasks.lingerDuration
-    XCTAssertEqual(linger, .milliseconds(400))
+    XCTAssertEqual(linger, .milliseconds(300))
     await clock.advance(by: linger - .milliseconds(1))
     XCTAssertTrue(scope.tasks.isLingering(id))
     await clock.advance(by: .milliseconds(1))
@@ -98,13 +98,13 @@ final class CompletionFeedbackTests: XCTestCase {
     let (scope, clock, _, _) = try await makeScope()
     let today = todayIDs(scope)
     let (first, second) = (today[0], today[1])
-    await scope.myTasks.toggleComplete(first)           // lingers 400 ms
-    scope.tasks.lingerDuration = .milliseconds(300)     // e.g. a debug default while tuning
-    await scope.myTasks.toggleComplete(second)          // lingers 300 ms
-    await clock.advance(by: .milliseconds(300))
+    await scope.myTasks.toggleComplete(first)           // lingers 300 ms (the default)
+    scope.tasks.lingerDuration = .milliseconds(150)     // e.g. tuning on device
+    await scope.myTasks.toggleComplete(second)          // lingers 150 ms
+    await clock.advance(by: .milliseconds(150))
     XCTAssertTrue(scope.tasks.isLingering(first), "the running linger keeps its duration")
     XCTAssertFalse(scope.tasks.isLingering(second))
-    await clock.advance(by: .milliseconds(100))
+    await clock.advance(by: .milliseconds(150))
     XCTAssertFalse(scope.tasks.isLingering(first))
 
     scope.tasks.lingerDuration = .zero                  // off
