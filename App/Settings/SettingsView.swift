@@ -1,4 +1,3 @@
-import AppKit
 import MekariProjectFeatures
 import MekariProjectKit
 import ServiceManagement
@@ -31,6 +30,7 @@ private struct GeneralSettings: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var needsApproval = SMAppService.mainApp.status == .requiresApproval
     @State private var loginItemError: String?
+    @Environment(\.controlActiveState) private var windowState
 
     var body: some View {
         Form {
@@ -53,11 +53,9 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
-        .task {
-            // The user may approve the login item in System Settings meanwhile (async sequence, no Combine).
-            for await _ in NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification) {
-                refreshLoginItemStatus()
-            }
+        // Coming back from System Settings: the user may have approved the login item meanwhile.
+        .onChange(of: windowState) { _, state in
+            if state == .key { refreshLoginItemStatus() }
         }
     }
 
