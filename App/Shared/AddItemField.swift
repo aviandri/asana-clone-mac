@@ -128,23 +128,16 @@ final class UndoFreeTextField: NSTextField {
 final class UndoFreeTextFieldCell: NSTextFieldCell {
     private(set) var editor: NSTextView?
 
-    override init(textCell string: String) {
-        super.init(textCell: string)
-        allowsUndo = false
-    }
-
-    required init(coder: NSCoder) {
-        super.init(coder: coder)
-        allowsUndo = false
-    }
-
     override func setUpFieldEditorAttributes(_ textObj: NSText) -> NSText {
         let text = super.setUpFieldEditorAttributes(textObj)
         (text as? NSTextView)?.allowsUndo = false
         return text
     }
 
+    // No init overrides: a Swift subclass that overrides one designated init stops inheriting the
+    // others, and AppKit may create cells through any of them.
     override func fieldEditor(for controlView: NSView) -> NSTextView? {
+        allowsUndo = false
         if let editor { return editor }
         let editor = NSTextView()
         editor.isFieldEditor = true
