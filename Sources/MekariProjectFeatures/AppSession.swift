@@ -17,13 +17,15 @@ public final class WorkspaceScope: Identifiable {
   public let quickAdd: QuickAddModel
   public let completionFeedback: CompletionFeedback
 
-  @ObservationIgnored private let api: any MekariAPI
+  /// Every request from this scope; refused once the scope is closed (see `ScopedAPI`).
+  @ObservationIgnored private let api: ScopedAPI
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored private var projects: [String: ProjectStore] = [:]
   @ObservationIgnored private var details: [String: TaskDetailStore] = [:]
 
   public init(api: any MekariAPI, workspace: Workspace, me: UserSummary, clock: any Clock<Duration> = ContinuousClock(),
               calendar: Calendar = .current, now: @escaping () -> Date = Date.init, defaults: UserDefaults = .standard) {
+    let api = ScopedAPI(api)
     self.api = api
     self.clock = clock
     id = workspace.id
@@ -41,7 +43,18 @@ public final class WorkspaceScope: Identifiable {
     completionFeedback.myTasks = myTasks
     completionFeedback.me = me
     completionFeedback.projectStore = { [weak self] id in self?.projects[id] }
+    completionFeedback.isClosed = { [api] in api.isClosed }
     tasks.feedback = completionFeedback
+  }
+
+  /// True once this workspace was left (switch, lost access, sign-out).
+  public var isClosed: Bool { api.isClosed }
+
+  /// Nothing from this scope reaches the server or the session-wide cooldown afterwards: in-flight work
+  /// (an edit, a renumber loop, a load a view started) can't go out under the next workspace's header.
+  func close() {
+    api.close()
+    poller.stop()
   }
 
   /// One store per project, kept for the life of the scope.
@@ -360,8 +373,9 @@ public final class AppSession {
 
   /// Signed in as `me`: header, scope and generation change together.
   private func adopt(_ me: Me, api: any MekariAPI) async {
+    // Close first: the old scope's requests stop before the header names the next workspace.
+    scope?.close()
     await api.setWorkspace(me.currentWorkspace?.id)
-    scope?.poller.stop()
     state = .signedIn(me)
     scope = me.currentWorkspace.map {
       WorkspaceScope(api: api, workspace: $0, me: me.user.summary, clock: clock, calendar: calendar, now: now)
@@ -387,7 +401,7 @@ public final class AppSession {
   private func endSession() {
     switchRequest += 1 // queued switches are void now
     serverWorkspaceID = nil
-    scope?.poller.stop()
+    scope?.close()
     scope = nil
     state = .signedOut
     generation += 1

@@ -663,3 +663,8 @@ public func submit() async                           // personal task assigned t
    - At most one event per 30 s, on the session clock; the window survives workspace switches. `celebrationsEnabled` is persisted in UserDefaults
      under `CompletionFeedback.celebrationsEnabledKey` and is on when unset; while it's off, no event
      fires and no 30 s window starts.
+10. **Closed scopes (from the Android #6 review):** a `WorkspaceScope` that was left (switch, lost access,
+    sign-out) is closed before the header changes. Its API client (`ScopedAPI`) then refuses every
+    request with `CancellationError` before it is sent, so in-flight work (an edit, a renumber loop, a
+    load a view started) never goes out under the next workspace's header. A late `confirm()` from a
+    closed scope neither celebrates nor starts the session-wide cooldown. `WorkspaceScope.isClosed`.
