@@ -11,6 +11,11 @@ public final class InboxStore {
   public private(set) var lastError: APIError?
 
   @ObservationIgnored private let api: any MekariAPI
+  /// Every load and local change gets a number. A response is applied unless something newer (a later
+  /// load that already finished, or a local change) has been applied since: so an older response never
+  /// overwrites newer state, yet a caller awaiting `load()` still gets its data when nothing newer landed.
+  @ObservationIgnored private var version = 0
+  @ObservationIgnored private var applied = 0
   public static let pageSize = 50
 
   public init(api: any MekariAPI) {
@@ -19,14 +24,18 @@ public final class InboxStore {
 
   public func load() async {
     if notifications.isEmpty { phase = .loading }
+    version += 1
+    let mine = version
     do {
       let page = try await api.notifications(unreadOnly: false, limit: Self.pageSize)
+      guard mine > applied else { return } // something newer is already showing
+      applied = mine
       notifications = page.data
       unreadCount = page.unreadCount
       phase = .loaded
     } catch {
-      phase = .failed(error.asAPIError)
-      lastError = error.asAPIError
+      guard mine > applied else { return }
+      recordFailure(error, phase: &phase, lastError: &lastError)
     }
   }
 
@@ -34,12 +43,18 @@ public final class InboxStore {
     guard let i = notifications.firstIndex(where: { $0.id == id }), !notifications[i].read else { return }
     notifications[i].read = true
     unreadCount = max(0, unreadCount - 1)
+    version += 1
+    applied = version
+    let mine = version
     do {
       try await api.markRead(id)
     } catch {
-      if let j = notifications.firstIndex(where: { $0.id == id }) { notifications[j].read = false }
-      unreadCount += 1
-      lastError = error.asAPIError
+      // Revert only if nothing newer (a reload, another change) replaced this state meanwhile.
+      if mine == applied, let j = notifications.firstIndex(where: { $0.id == id }) {
+        notifications[j].read = false
+        unreadCount += 1
+      }
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -47,11 +62,14 @@ public final class InboxStore {
     let previous = (notifications, unreadCount)
     for i in notifications.indices { notifications[i].read = true }
     unreadCount = 0
+    version += 1
+    applied = version
+    let mine = version
     do {
       try await api.markAllRead()
     } catch {
-      (notifications, unreadCount) = previous
-      lastError = error.asAPIError
+      if mine == applied { (notifications, unreadCount) = previous }
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -100,13 +118,13 @@ public final class NotificationPoller {
   /// Starts polling now; does nothing if already running.
   public func start() {
     guard loop == nil else { return }
+    let clock = clock
+    // `self` is held only while polling, never across the sleep, so a dropped scope stops the loop.
     loop = Task { [weak self] in
       while !Task.isCancelled {
-        guard let self else { return }
-        await self.poll()
-        let interval = self.mode == .active ? Self.activeInterval : Self.backgroundInterval
+        guard let interval = await self?.pollOnce() else { return }
         do {
-          try await self.clock.sleep(for: interval)
+          try await clock.sleep(for: interval)
         } catch {
           return
         }
@@ -129,10 +147,16 @@ public final class NotificationPoller {
     }
   }
 
+  /// One poll; returns how long to wait before the next one.
+  private func pollOnce() async -> Duration {
+    await poll()
+    return mode == .active ? Self.activeInterval : Self.backgroundInterval
+  }
+
   /// One poll: refreshes the inbox and reports unread notifications not seen before.
   func poll() async {
     await inbox.load()
-    guard case .loaded = inbox.phase else { return }
+    guard !Task.isCancelled, case .loaded = inbox.phase else { return }
     let unread = inbox.notifications.filter { !$0.read }
     if let seen {
       let fresh = unread.filter { !seen.contains($0.id) }
@@ -149,7 +173,10 @@ public final class NotificationPoller {
 @MainActor @Observable
 public final class SearchStore {
   public var query = "" {
-    didSet { if query != oldValue { schedule() } }
+    didSet {
+      // Whitespace-only edits don't search again.
+      if Self.normalized(query) != Self.normalized(oldValue) { schedule() }
+    }
   }
   public private(set) var results: SearchResults?
   public private(set) var isSearching = false
@@ -174,10 +201,14 @@ public final class SearchStore {
     .task(id: id, projectID: results?.tasks.first { $0.id == id }?.projectId)
   }
 
+  private static func normalized(_ text: String) -> String {
+    text.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   private func schedule() {
     generation += 1
     let current = generation
-    let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    let q = Self.normalized(query)
     guard q.count >= Self.minimumLength else {
       debouncer.cancel()
       results = nil
@@ -194,7 +225,7 @@ public final class SearchStore {
         self.lastError = nil
       } catch {
         guard current == self.generation else { return }
-        self.lastError = error.asAPIError
+        recordFailure(error, lastError: &self.lastError)
       }
       self.isSearching = false
     }

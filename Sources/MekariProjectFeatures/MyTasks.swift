@@ -20,8 +20,7 @@ public final class SidebarStore {
       projects = try await api.projects(archived: false).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
       phase = .loaded
     } catch {
-      phase = .failed(error.asAPIError)
-      lastError = error.asAPIError
+      recordFailure(error, phase: &phase, lastError: &lastError)
     }
   }
 
@@ -65,7 +64,11 @@ public struct TaskGroup: Identifiable, Equatable, Sendable {
 public final class MyTasksStore {
   /// Includes completed tasks (reloads).
   public var showCompleted = false {
-    didSet { if showCompleted != oldValue { Task { await refresh() } } }
+    didSet {
+      guard showCompleted != oldValue else { return }
+      reload?.cancel()
+      reload = Task { [weak self] in await self?.refresh() }
+    }
   }
   public private(set) var phase: LoadState = .idle
   public private(set) var lastError: APIError?
@@ -76,6 +79,8 @@ public final class MyTasksStore {
   @ObservationIgnored private let calendar: Calendar
   @ObservationIgnored private let now: () -> Date
   private var ids: [String] = []
+  @ObservationIgnored private var reload: Task<Void, Never>?
+  @ObservationIgnored private var loadVersion = 0
 
   public init(api: any MekariAPI, tasks: TaskCache, me: UserSummary, calendar: Calendar = .current, now: @escaping () -> Date = Date.init) {
     self.api = api
@@ -117,15 +122,18 @@ public final class MyTasksStore {
 
   public func refresh() async {
     if ids.isEmpty { phase = .loading }
+    loadVersion += 1
+    let mine = loadVersion
     do {
       let list = try await api.myTasks(includeCompleted: showCompleted)
+      guard mine == loadVersion else { return } // a newer refresh (e.g. the toggle) won
       tasks.upsert(list)
       // Keep tasks completed in this session visible (with "show completed" off they're filtered anyway).
       ids = list.map(\.id)
       phase = .loaded
     } catch {
-      phase = .failed(error.asAPIError)
-      lastError = error.asAPIError
+      guard mine == loadVersion else { return }
+      recordFailure(error, phase: &phase, lastError: &lastError)
     }
   }
 
@@ -134,7 +142,7 @@ public final class MyTasksStore {
     do {
       try await tasks.update(id, TaskChanges(completed: !task.completed))
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -146,7 +154,7 @@ public final class MyTasksStore {
       let created = try await api.createTask(NewTask(title: trimmed, assigneeId: me.id, dueDate: dueDate))
       didCreate(created)
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -191,7 +199,7 @@ public final class QuickAddModel {
       dueDate = nil
       lastError = nil
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 

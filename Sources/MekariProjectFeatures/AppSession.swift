@@ -105,6 +105,9 @@ public final class AppSession {
   @ObservationIgnored private var api: (any MekariAPI)?
   @ObservationIgnored private var eventLoop: Task<Void, Never>?
   @ObservationIgnored private var switchRequest = 0
+  @ObservationIgnored private var switchQueue: Task<Void, Never>?
+  /// The workspace the server will open next (its `lastWorkspaceId`), as far as we know.
+  @ObservationIgnored private var serverWorkspaceID: String?
 
   public init(settings: ServerSettings, tokens: TokenStore, apiFactory: @escaping @Sendable (URL, TokenStore) -> any MekariAPI,
               clock: any Clock<Duration> = ContinuousClock(), calendar: Calendar = .current, now: @escaping () -> Date = Date.init) {
@@ -129,23 +132,11 @@ public final class AppSession {
   public var isGuest: Bool { current?.isGuest ?? false }
   public var isAdmin: Bool { current?.isAdmin ?? false }
 
-  /// Switches the app's workspace. Serialized: if another switch starts meanwhile, the newest wins.
+  /// Switches the app's workspace. Switches (and lost-access recovery) run one at a time, in order;
+  /// one superseded before it starts is skipped before its POST, so both the app and the server's
+  /// `lastWorkspaceId` end on the newest choice.
   public func switchWorkspace(to id: String) async {
-    guard let api, case .signedIn(var me) = state, id != current?.id else { return }
-    switchRequest += 1
-    let request = switchRequest
-    do {
-      let workspace = try await api.switchWorkspace(id)
-      guard request == switchRequest else { return }
-      me.currentWorkspace = workspace
-      if let i = me.workspaces.firstIndex(where: { $0.id == id }) { me.workspaces[i] = workspace }
-      me.user.role = workspace.myRole
-      await adopt(me, api: api)
-      notice = "Switched to \(workspace.name)"
-    } catch {
-      guard request == switchRequest else { return }
-      notice = error.asAPIError.message
-    }
+    await serialized { session, request in await session.performSwitch(to: id, request: request) }
   }
 
   /// ⌘1…⌘9 (0-based). Out of range does nothing.
@@ -168,7 +159,9 @@ public final class AppSession {
       return
     }
     do {
-      await adopt(try await api.me(), api: api)
+      let me = try await api.me()
+      serverWorkspaceID = me.currentWorkspace?.id
+      await adopt(me, api: api)
     } catch {
       let apiError = error.asAPIError
       // Offline at launch keeps the token for next time.
@@ -197,6 +190,7 @@ public final class AppSession {
     do {
       let me = try await api.login(email: email.trimmingCharacters(in: .whitespaces), password: password)
       settings.serverURL = url
+      serverWorkspaceID = me.currentWorkspace?.id
       await adopt(me, api: api)
     } catch {
       let apiError = error.asAPIError
@@ -255,6 +249,56 @@ public final class AppSession {
 
   // MARK: - Internals
 
+  /// Queues a workspace job after the ones already queued. A job is skipped (before it starts) or not
+  /// committed if a newer superseding job was queued after it. User switches supersede everything
+  /// queued before them; lost-access recovery supersedes nothing (it never cancels a user's switch).
+  private func serialized(supersedes: Bool = true, _ job: @escaping @MainActor (AppSession, Int) async -> Void) async {
+    if supersedes { switchRequest += 1 }
+    let request = switchRequest
+    let previous = switchQueue
+    let task = Task { @MainActor [weak self] in
+      await previous?.value
+      guard let self, request == self.switchRequest else { return }
+      await job(self, request)
+    }
+    switchQueue = task
+    await task.value
+  }
+
+  private func performSwitch(to id: String, request: Int) async {
+    guard let api, case .signedIn(var me) = state else { return }
+    // Nothing to do only if both the app and the server are already there.
+    if id == current?.id, id == serverWorkspaceID { return }
+    do {
+      let workspace = try await api.switchWorkspace(id)
+      serverWorkspaceID = id
+      guard request == switchRequest else { return }
+      me.currentWorkspace = workspace
+      if let i = me.workspaces.firstIndex(where: { $0.id == id }) { me.workspaces[i] = workspace }
+      me.user.role = workspace.myRole
+      await adopt(me, api: api)
+      notice = "Switched to \(workspace.name)"
+    } catch {
+      guard request == switchRequest, !(error is CancellationError) else { return }
+      notice = error.asAPIError.message
+    }
+  }
+
+  /// Lost access: adopt the workspace `/auth/me` (sent without a header) gives us.
+  private func recoverLostAccess(from workspaceID: String, request: Int) async {
+    guard let api, workspaceID == current?.id else { return }
+    let lostName = current?.name
+    await api.setWorkspace(nil)
+    do {
+      let me = try await api.me()
+      guard request == switchRequest else { return }
+      await adopt(me, api: api)
+      if let lostName { notice = "You no longer have access to \(lostName)" }
+    } catch {
+      // A 401 here arrives as its own event; a newer job sets the header again.
+    }
+  }
+
   private func makeAPI(_ server: URL) -> any MekariAPI {
     let api = apiFactory(server, tokens)
     eventLoop?.cancel()
@@ -285,19 +329,16 @@ public final class AppSession {
       guard state != .signedOut else { return }
       endSession()
     case .workspaceLost(let workspaceID):
-      guard let api, workspaceID == current?.id else { return }
-      let lostName = current?.name
-      await api.setWorkspace(nil)
-      do {
-        await adopt(try await api.me(), api: api)
-        if let lostName { notice = "You no longer have access to \(lostName)" }
-      } catch {
-        // A 401 here arrives as its own event.
+      guard workspaceID == current?.id else { return }
+      await serialized(supersedes: false) { session, request in
+        await session.recoverLostAccess(from: workspaceID, request: request)
       }
     }
   }
 
   private func endSession() {
+    switchRequest += 1 // queued switches are void now
+    serverWorkspaceID = nil
     scope?.poller.stop()
     scope = nil
     state = .signedOut

@@ -17,6 +17,8 @@ public final class TaskDetailStore {
   @ObservationIgnored private let me: UserSummary
   @ObservationIgnored private let workspaceRole: WorkspaceRole
   private var projectRole: ProjectRole?
+  /// False until the project role is known; project tasks stay read-only until then (fail closed).
+  private var projectRoleKnown = false
 
   public init(api: any MekariAPI, tasks: TaskCache, taskID: String, me: UserSummary, workspaceRole: WorkspaceRole,
               clock: any Clock<Duration> = ContinuousClock()) {
@@ -35,7 +37,7 @@ public final class TaskDetailStore {
   public var canEdit: Bool {
     guard let task else { return false }
     if task.projectId == nil || workspaceRole == .admin { return true }
-    return projectRole != .commenter
+    return projectRoleKnown && projectRole != .commenter
   }
 
   public var isFollowing: Bool { task?.followers.contains { $0.id == me.id } ?? false }
@@ -49,12 +51,16 @@ public final class TaskDetailStore {
       tasks.upsert(detail)
       stories = loadedStories
       if let projectID = detail.projectId {
-        projectRole = try? await api.project(projectID).myRole
+        do {
+          projectRole = try await api.project(projectID).myRole
+          projectRoleKnown = true
+        } catch {
+          projectRoleKnown = false
+        }
       }
       phase = .loaded
     } catch {
-      phase = .failed(error.asAPIError)
-      lastError = error.asAPIError
+      recordFailure(error, phase: &phase, lastError: &lastError)
     }
   }
 
@@ -97,7 +103,7 @@ public final class TaskDetailStore {
       _ = try await api.createTask(NewTask(title: trimmed, parentId: taskID))
       tasks.upsert(try await api.task(taskID))
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -106,7 +112,7 @@ public final class TaskDetailStore {
     do {
       try await tasks.update(id, TaskChanges(completed: !subtask.completed))
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -118,7 +124,7 @@ public final class TaskDetailStore {
     do {
       tasks.upsert(try await api.addFollower(taskID: taskID, userID: user.id))
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -126,7 +132,7 @@ public final class TaskDetailStore {
     do {
       tasks.upsert(try await api.removeFollower(taskID: taskID, userID: user.id))
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -140,7 +146,7 @@ public final class TaskDetailStore {
         return story
       }
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -149,7 +155,7 @@ public final class TaskDetailStore {
       try await api.deleteComment(id)
       stories.removeAll { if case .comment(let c) = $0 { return c.id == id } else { return false } }
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -159,7 +165,7 @@ public final class TaskDetailStore {
     do {
       try await tasks.update(taskID, changes, assignee: assignee)
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 }
@@ -206,13 +212,19 @@ public final class CommentComposer {
     guard canSend else { return }
     isSending = true
     defer { isSending = false }
+    let sent = draft
     do {
-      let comment = try await api.addComment(taskID: taskID, body: draft.trimmingCharacters(in: .whitespacesAndNewlines))
-      draft = ""
+      let comment = try await api.addComment(taskID: taskID, body: sent.trimmingCharacters(in: .whitespacesAndNewlines))
+      // Keep anything typed while sending.
+      if draft == sent {
+        draft = ""
+      } else if draft.hasPrefix(sent) {
+        draft = String(draft.dropFirst(sent.count)).trimmingCharacters(in: .whitespaces)
+      }
       lastError = nil
       onSent?(comment)
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -228,6 +240,7 @@ public final class UserSearch {
   }
   public private(set) var results: [PickableUser] = []
   public private(set) var isLoading = false
+  public private(set) var lastError: APIError?
 
   @ObservationIgnored private let api: any MekariAPI
   @ObservationIgnored private let debouncer: Debouncer
@@ -245,9 +258,15 @@ public final class UserSearch {
     isLoading = true
     debouncer.schedule { [weak self] in
       guard let self else { return }
-      let found = (try? await self.api.users(query: q.isEmpty ? nil : q)) ?? []
-      guard current == self.generation else { return } // a newer query is on its way
-      self.results = found
+      do {
+        let found = try await self.api.users(query: q.isEmpty ? nil : q)
+        guard current == self.generation else { return } // a newer query is on its way
+        self.results = found
+        self.lastError = nil
+      } catch {
+        guard current == self.generation else { return }
+        recordFailure(error, lastError: &self.lastError)
+      }
       self.isLoading = false
     }
   }

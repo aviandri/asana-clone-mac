@@ -28,6 +28,8 @@ public actor FakeMekariAPI: MekariAPI {
   private var workspaceID: String?
   private var failures: [FakeEndpoint: APIError] = [:]
   private var latency: Duration = .zero
+  private var holds: Set<FakeEndpoint> = []
+  private var parked: [FakeEndpoint: [CheckedContinuation<Void, Never>]] = [:]
   public private(set) var calls: [FakeCall] = []
 
   /// - Parameter signedInAs: an email to start signed in as, or nil to start signed out.
@@ -45,6 +47,33 @@ public actor FakeMekariAPI: MekariAPI {
 
   public func setLatency(_ duration: Duration) {
     latency = duration
+  }
+
+  /// Parks every later call to `endpoint` (after it is recorded, before it runs) until `release`.
+  /// Lets tests interleave concurrent requests deterministically, without sleeps.
+  public func hold(_ endpoint: FakeEndpoint) {
+    holds.insert(endpoint)
+  }
+
+  /// Lets the oldest (or `newest`) parked call to `endpoint` continue. With `all`, releases every
+  /// parked call and stops holding new ones.
+  public func release(_ endpoint: FakeEndpoint, all: Bool = false, newest: Bool = false) {
+    if all { holds.remove(endpoint) }
+    var waiting = parked[endpoint] ?? []
+    guard !waiting.isEmpty else { return }
+    if all {
+      parked[endpoint] = nil
+      waiting.forEach { $0.resume() }
+    } else {
+      let next = newest ? waiting.removeLast() : waiting.removeFirst()
+      parked[endpoint] = waiting
+      next.resume()
+    }
+  }
+
+  /// How many calls to `endpoint` are parked right now.
+  public func parkedCount(_ endpoint: FakeEndpoint) -> Int {
+    parked[endpoint]?.count ?? 0
   }
 
   public func emit(_ event: APIEvent) {
@@ -419,6 +448,11 @@ public actor FakeMekariAPI: MekariAPI {
 
   private func gate(_ endpoint: FakeEndpoint, scoped: Bool = true) async throws {
     calls.append(FakeCall(endpoint: endpoint, workspaceID: scoped ? workspaceID : nil))
+    if holds.contains(endpoint) {
+      await withCheckedContinuation { parked[endpoint, default: []].append($0) }
+      // Like the live client: a caller cancelled while waiting gets CancellationError.
+      if Task.isCancelled { throw CancellationError() }
+    }
     if latency > .zero { try? await Task.sleep(for: latency) }
     if let failure = failures.removeValue(forKey: endpoint) {
       if failure.code == .unauthorized, endpoint != .login {

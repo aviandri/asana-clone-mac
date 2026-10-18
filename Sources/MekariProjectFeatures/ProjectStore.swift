@@ -21,6 +21,8 @@ public final class ProjectStore {
   @ObservationIgnored private let workspaceRole: WorkspaceRole
   private var ids: [String] = []
   @ObservationIgnored private var didChooseInitialMode = false
+  @ObservationIgnored private var loadVersion = 0
+  @ObservationIgnored private var appliedVersion = 0
 
   public init(api: any MekariAPI, tasks: TaskCache, projectID: String, workspaceRole: WorkspaceRole) {
     self.api = api
@@ -45,10 +47,15 @@ public final class ProjectStore {
 
   public func load() async {
     if detail == nil { phase = .loading }
+    loadVersion += 1
+    let mine = loadVersion
     do {
       async let detailCall = api.project(projectID)
       async let tasksCall = api.projectTasks(projectID, completed: nil)
       let (loaded, list) = try await (detailCall, tasksCall)
+      guard mine > appliedVersion else { return } // a later load already landed
+      appliedVersion = mine
+      // Tasks edited meanwhile keep their newer state (TaskCache ignores older copies).
       detail = loaded
       sections = loaded.sections.sorted { $0.position < $1.position }
       tasks.upsert(list)
@@ -59,8 +66,7 @@ public final class ProjectStore {
       }
       phase = .loaded
     } catch {
-      phase = .failed(error.asAPIError)
-      lastError = error.asAPIError
+      recordFailure(error, phase: &phase, lastError: &lastError)
     }
   }
 
@@ -74,7 +80,7 @@ public final class ProjectStore {
       tasks.upsert(created)
       ids.append(created.id)
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -86,7 +92,7 @@ public final class ProjectStore {
                                                 position: Reorder.position(between: sections.last?.position, and: nil))
       sections.append(section)
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -100,7 +106,7 @@ public final class ProjectStore {
       if let i = sections.firstIndex(where: { $0.id == id }) { sections[i] = saved }
     } catch {
       if let i = sections.firstIndex(where: { $0.id == id }) { sections[i] = previous }
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -121,20 +127,38 @@ public final class ProjectStore {
     let after = index < destination.count ? destination[index].position : nil
     let sectionPatch: Patch<String>? = task.sectionId == sectionID ? nil : (sectionID.map { .set($0) } ?? .clear)
 
+    if Reorder.needsRenumbering(between: before, and: after) {
+      await renumber(moving: taskID, toSection: sectionID, before: index < destination.count ? destination[index].id : nil,
+                     sectionPatch: sectionPatch)
+      return
+    }
     do {
-      if Reorder.needsRenumbering(between: before, and: after) {
-        // Too little room between neighbours: renumber the whole destination, moved task included.
-        var order = destination.map(\.id)
-        order.insert(taskID, at: index)
-        for (id, position) in zip(order, Reorder.renumbered(count: order.count)) {
-          let changes = TaskChanges(sectionId: id == taskID ? sectionPatch : nil, position: position)
-          if tasks[id]?.position != position || changes.sectionId != nil { try await tasks.update(id, changes) }
-        }
-      } else {
-        try await tasks.update(taskID, TaskChanges(sectionId: sectionPatch, position: Reorder.position(between: before, and: after)))
+      try await tasks.update(taskID, TaskChanges(sectionId: sectionPatch, position: Reorder.position(between: before, and: after)))
+    } catch {
+      recordFailure(error, lastError: &lastError)
+    }
+  }
+
+  /// Too little room between neighbours: renumber the WHOLE destination section from the server's
+  /// list (completed and hidden tasks included, so none of them jumps to the top), with the moved
+  /// task placed before `anchorID` (or last). On any failure, reload the project from the server.
+  private func renumber(moving taskID: String, toSection sectionID: String?, before anchorID: String?, sectionPatch: Patch<String>?) async {
+    do {
+      let all = try await api.projectTasks(projectID, completed: nil)
+      tasks.upsert(all)
+      for task in all where !ids.contains(task.id) { ids.append(task.id) }
+      var order = all.filter { $0.sectionId == sectionID && $0.parentId == nil && $0.id != taskID }
+        .sorted { $0.position != $1.position ? $0.position < $1.position : $0.createdAt < $1.createdAt }
+        .map(\.id)
+      let at = anchorID.flatMap { order.firstIndex(of: $0) } ?? order.count
+      order.insert(taskID, at: at)
+      for (id, position) in zip(order, Reorder.renumbered(count: order.count)) {
+        let changes = TaskChanges(sectionId: id == taskID ? sectionPatch : nil, position: position)
+        if tasks[id]?.position != position || changes.sectionId != nil { try await tasks.update(id, changes) }
       }
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
+      if !(error is CancellationError) { await load() }
     }
   }
 
@@ -157,7 +181,7 @@ public final class ProjectStore {
       if let i = sections.firstIndex(where: { $0.id == id }) { sections[i] = saved }
     } catch {
       sections = previous
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 
@@ -166,7 +190,7 @@ public final class ProjectStore {
     do {
       try await tasks.update(id, TaskChanges(completed: !task.completed))
     } catch {
-      lastError = error.asAPIError
+      recordFailure(error, lastError: &lastError)
     }
   }
 

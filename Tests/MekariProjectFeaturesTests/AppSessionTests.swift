@@ -89,20 +89,63 @@ final class AppSessionTests: XCTestCase {
   }
 
   @MainActor
-  func testConcurrentSwitchesNewestWins() async {
+  func testSwitchingAwayAndBackBeforeTheFirstCommitsEndsWhereTheUserLastChose() async {
     let fake = demoFake()
-    await fake.setLatency(.milliseconds(20))
-    let session = await signedInSession(fake)
-    async let first: Void = session.switchWorkspace(to: DemoIDs.acmePilot)
-    async let second: Void = session.switchWorkspace(to: DemoIDs.mekari) // no-op: already current
-    _ = await (first, second)
-    XCTAssertEqual(session.current?.id, DemoIDs.acmePilot)
+    let session = await signedInSession(fake) // on Mekari
+    await fake.hold(.switchWorkspace)
+    async let toAcme: Void = session.switchWorkspace(to: DemoIDs.acmePilot)
+    await waitUntil("the first POST is in flight") { await fake.parkedCount(.switchWorkspace) == 1 }
+    async let back: Void = session.switchWorkspace(to: DemoIDs.mekari) // ⌘2 right after ⌘1
+    await fake.release(.switchWorkspace, all: true)
+    _ = await (toAcme, back)
 
-    async let a: Void = session.switchWorkspace(to: DemoIDs.mekari)
-    try? await Task.sleep(for: .milliseconds(5))
-    async let b: Void = session.switchWorkspace(to: DemoIDs.mekari)
-    _ = await (a, b)
     XCTAssertEqual(session.current?.id, DemoIDs.mekari)
+    // The server was told about Acme, so going back is POSTed too: the next launch opens Mekari.
+    let posts = await fake.calls.filter { $0.endpoint == .switchWorkspace }.count
+    XCTAssertEqual(posts, 2)
+    let next = try? await fake.me()
+    XCTAssertEqual(next?.currentWorkspace?.id, DemoIDs.mekari)
+  }
+
+  @MainActor
+  func testASwitchSupersededBeforeItStartsNeverPosts() async {
+    let fake = demoFake()
+    let session = await signedInSession(fake)
+    await fake.hold(.switchWorkspace)
+    async let first: Void = session.switchWorkspace(to: DemoIDs.acmePilot)
+    await waitUntil("the first POST is in flight") { await fake.parkedCount(.switchWorkspace) == 1 }
+    async let second: Void = session.switchWorkspace(to: DemoIDs.acmePilot) // queued behind the first…
+    async let third: Void = session.switchWorkspace(to: DemoIDs.mekari)     // …and superseded by this one
+    await fake.release(.switchWorkspace, all: true)
+    _ = await (first, second, third)
+
+    XCTAssertEqual(session.current?.id, DemoIDs.mekari)
+    let posts = await fake.calls.filter { $0.endpoint == .switchWorkspace }.count
+    XCTAssertEqual(posts, 2) // first and third; the second was skipped before its POST
+  }
+
+  @MainActor
+  func testLostAccessDoesNotOverrideASwitchTheUserAlreadyStarted() async {
+    let fake = demoFake()
+    let session = await signedInSession(fake)
+    await session.switchWorkspace(to: DemoIDs.acmePilot)
+    let acmeScope = session.scope
+
+    await fake.hold(.switchWorkspace)
+    async let userSwitch: Void = session.switchWorkspace(to: DemoIDs.mekari)
+    await waitUntil("the switch POST is in flight") { await fake.parkedCount(.switchWorkspace) == 1 }
+    // Meanwhile Acme access is revoked and an Acme-scoped load notices.
+    await fake.removeMembership(userID: DemoIDs.alice, workspaceID: DemoIDs.acmePilot)
+    await acmeScope?.myTasks.refresh()
+    await fake.release(.switchWorkspace, all: true)
+    await userSwitch
+    await waitUntil("the queue drains") { session.current?.id == DemoIDs.mekari }
+    await settle()
+
+    XCTAssertEqual(session.current?.id, DemoIDs.mekari)
+    XCTAssertEqual(session.notice, "Switched to Mekari") // the recovery saw it was moot
+    let meCalls = await fake.calls.filter { $0.endpoint == .me }.count
+    XCTAssertEqual(meCalls, 1) // only start(); no recovery /auth/me
   }
 
   @MainActor
