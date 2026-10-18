@@ -9,24 +9,14 @@ struct MyTasksView: View {
     @Bindable var store: MyTasksStore
     @Binding var selection: String?
 
-    @State private var newTitle = ""
-    @FocusState private var addFocused: Bool
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         List(selection: $selection) {
             Section {
-                HStack(spacing: 8) {
-                    Image(systemName: "plus.circle")
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                    TextField("Add task", text: $newTitle)
-                        .textFieldStyle(.plain)
-                        .focused($addFocused)
-                        .onSubmit(addTask)
-                        .accessibilityLabel("New task title")
+                AddTaskRow { title in
+                    Task { await store.addTask(title: title) }
                 }
-                .selectionDisabled()
             }
 
             ForEach(store.groups) { group in
@@ -85,14 +75,6 @@ struct MyTasksView: View {
 
     private func openTaskWindow(_ id: String) {
         openWindow(id: WindowID.task, value: TaskWindowRef(workspaceID: scope.id, taskID: id))
-    }
-
-    private func addTask() {
-        let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-        newTitle = ""
-        Task { await store.addTask(title: title) }
-        addFocused = true
     }
 }
 

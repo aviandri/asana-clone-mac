@@ -396,7 +396,6 @@ struct SubtasksSection: View {
     let store: TaskDetailStore
     let subtasks: [TaskItem]
     let onOpenTask: (String) -> Void
-    @State private var newTitle = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -424,14 +423,9 @@ struct SubtasksSection: View {
             if store.canEdit {
                 HStack(spacing: 8) {
                     Image(systemName: "plus").foregroundStyle(.secondary).accessibilityHidden(true)
-                    TextField("Add subtask", text: $newTitle)
-                        .textFieldStyle(.plain)
-                        .onSubmit {
-                            let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                            guard !title.isEmpty else { return }
-                            newTitle = ""
-                            Task { await store.addSubtask(title: title) }
-                        }
+                    AddItemField(placeholder: "Add subtask", accessibilityID: "subtask.addField", accessibilityLabel: "New subtask title") { title in
+                        Task { await store.addSubtask(title: title) }
+                    }
                 }
             }
         }
