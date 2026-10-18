@@ -1,3 +1,4 @@
+import Foundation
 import MekariProjectFeatures
 import MekariProjectKit
 import Observation
