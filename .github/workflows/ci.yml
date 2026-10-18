@@ -172,9 +172,10 @@ jobs:
 
   macos-xcode15:
     # Oldest supported Mac toolchain: macOS 14 + Xcode 15.4 (Swift 5.10, macOS 14.5 SDK), so a
-    # developer Mac on Sonoma can build locally. Build + test only, no archive.
+    # developer Mac on Sonoma can build locally. Build + test (Debug), then the UI tests again on
+    # the Release configuration; no archive.
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       PROJECT: MekariProject.xcodeproj
       SCHEME: MekariProjectApp
@@ -188,6 +189,20 @@ jobs:
         run: |
           xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO build test
+      - name: UI tests against the Release build
+        # Shipped builds are Release (optimized, no testability), and v0.1.0 crashed on Add task
+        # where Debug didn't. The unit tests need @testable (Debug only), so run the UI target.
+        run: |
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
+            -destination 'platform=macOS' -resultBundlePath build/ReleaseUITests.xcresult \
+            CODE_SIGNING_ALLOWED=NO -only-testing:MekariProjectUITests test
+      - name: Upload Release UI test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-uitests-xcresult
+          path: build/ReleaseUITests.xcresult
+          retention-days: 14
 
   release:
     # v* tags only: a GitHub Release with the universal zip and notes generated from merged PRs.
@@ -211,10 +226,10 @@ jobs:
           notes=$(cat <<'NOTES'
           Universal (Apple Silicon + Intel), macOS 14+. Unsigned (ad-hoc), not notarized. To install:
 
-          1. Unzip and **move Mekari Project.app to Applications first**, then launch it from there.
-          2. If macOS says it "can't be opened because Apple cannot check it for malicious software": click OK, open **System Settings → Privacy & Security**, scroll to "Mekari Project was blocked…", click **Open Anyway** and confirm. Right-click → Open also works on macOS 14.
-          3. Or in Terminal: `xattr -dr com.apple.quarantine "/Applications/Mekari Project.app"`
-          4. Delete any copy left in Downloads.
+          1. Delete any old `Mekari Project.app` / `MekariProject-*.zip` in Downloads first (otherwise the new one unzips as "Mekari Project 2.app").
+          2. Unzip, **drag Mekari Project.app into Applications in Finder** (not `mv` in Terminal), and launch it from there.
+          3. If macOS says it "can't be opened because Apple cannot check it for malicious software": click OK, open **System Settings → Privacy & Security**, scroll to "Mekari Project was blocked…", click **Open Anyway** and confirm. Right-click → Open also works on macOS 14. Or in Terminal: `xattr -dr com.apple.quarantine "/Applications/Mekari Project.app"`
+          4. Delete the zip and anything else left in Downloads.
 
           The proper fix is Developer ID signing + notarization (needs an Apple Developer account). See the README for details.
           NOTES
