@@ -14,29 +14,45 @@ struct TaskInspectorView: View {
 
     var body: some View {
         Group {
-            if let task = store.task {
+            if let task = InspectorPreview.detail(store: store, cache: scope.tasks) {
+                // Before the first GET /tasks/:id, `task` is the list row's TaskItem (stale-while-
+                // revalidate): shown at once, read-only, with the rest loading in place.
+                let loaded = store.task != nil
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         ErrorBanner(error: store.lastError) { store.clearError() }
-                        header(task)
+                        header(task, loaded: loaded)
                         fields(task)
-                        DescriptionEditor(text: task.description ?? "", canEdit: store.canEdit) { text in
-                            guard canCommit else { return }
-                            Task { await store.setDescription(text.isEmpty ? nil : text) }
+                        if loaded || !(task.description ?? "").isEmpty {
+                            DescriptionEditor(text: task.description ?? "", canEdit: store.canEdit) { text in
+                                guard canCommit else { return }
+                                Task { await store.setDescription(text.isEmpty ? nil : text) }
+                            }
                         }
-                        SubtasksSection(store: store, subtasks: task.subtasks, onOpenTask: onOpenTask)
-                        FollowersSection(scope: scope, store: store, followers: task.followers)
-                        Divider()
-                        StoriesSection(stories: store.stories, me: scope.me, canDelete: { $0.author.id == scope.me.id }) { id in
-                            Task { await store.deleteComment(id) }
+                        if loaded {
+                            SubtasksSection(store: store, subtasks: task.subtasks, onOpenTask: onOpenTask)
+                            FollowersSection(scope: scope, store: store, followers: task.followers)
+                            Divider()
+                            StoriesSection(stories: store.stories, me: scope.me, canDelete: { $0.author.id == scope.me.id }) { id in
+                                Task { await store.deleteComment(id) }
+                            }
+                        } else {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Loading details…").foregroundStyle(.secondary)
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityIdentifier("inspector.loadingDetails")
                         }
                     }
                     .padding(16)
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    CommentComposerView(composer: store.composer)
-                        .padding(12)
-                        .background(.bar)
+                    if loaded {
+                        CommentComposerView(composer: store.composer)
+                            .padding(12)
+                            .background(.bar)
+                    }
                 }
             } else if case .failed(let error) = store.phase {
                 ContentUnavailableView(
@@ -60,7 +76,7 @@ struct TaskInspectorView: View {
         return session.scope?.id == scope.id
     }
 
-    @ViewBuilder private func header(_ task: TaskDetail) -> some View {
+    @ViewBuilder private func header(_ task: TaskDetail, loaded: Bool) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if let parent = task.parent {
                 Button {
@@ -82,7 +98,7 @@ struct TaskInspectorView: View {
                 .buttonStyle(.bordered)
                 .disabled(!store.canEdit)
                 Spacer()
-                if !store.canEdit {
+                if loaded, !store.canEdit {
                     Label("Read only", systemImage: "lock")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -467,5 +483,17 @@ struct FollowersSection: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(followers.isEmpty ? "No followers" : "Followers: \(followers.map(\.name).joined(separator: ", "))")
         }
+    }
+}
+
+/// What the inspector shows: the loaded detail, else (until the first load finishes) the task's row
+/// from the list cache, so selecting a task never blanks the panel (rc1 QA P1). A failed load shows
+/// its error instead (e.g. no access), not a stale preview.
+@MainActor
+enum InspectorPreview {
+    static func detail(store: TaskDetailStore, cache: TaskCache) -> TaskDetail? {
+        if let loaded = store.task { return loaded }
+        if case .failed = store.phase { return nil }
+        return cache[store.taskID].map { TaskDetail(task: $0) }
     }
 }
