@@ -7,7 +7,7 @@ final class MyTasksStoreTests: XCTestCase {
   @MainActor
   func makeStore(_ fake: FakeMekariAPI) async -> (MyTasksStore, TaskCache) {
     await fake.setWorkspace(DemoIDs.mekari)
-    let cache = TaskCache(api: fake)
+    let cache = TaskCache(api: fake, lingerDuration: .zero) // lingering has its own tests
     let store = MyTasksStore(api: fake, tasks: cache, me: alice, calendar: TestTime.calendar, now: { TestTime.now })
     await store.refresh()
     return (store, cache)
