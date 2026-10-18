@@ -88,10 +88,29 @@ final class AppFlowUITests: XCTestCase {
         XCTAssertEqual(app.windows.count, 1, "the link opened an extra (Task) window")
     }
 
+    /// rc1 QA S1: a CommandGroup anchored to a placement the app doesn't have is dropped silently,
+    /// so check every command is actually in its menu.
+    @MainActor
+    func testEveryCommandIsInItsMenu() {
+        let app = launch()
+        let expected = [
+            ("File", "Open Task in New Window"),
+            ("File", "Open in Browser"),
+            ("Edit", "Search…"),
+            ("View", "Refresh"),
+            ("Workspace", "Mekari"),
+        ]
+        for (menu, item) in expected {
+            XCTAssertTrue(app.menuBars.menuBarItems[menu].menuItems[item].exists, "\(menu) → \(item) missing")
+        }
+        XCTAssertTrue(app.menuBars.menuItems["Sign Out"].exists, "app menu → Sign Out missing")
+    }
+
     /// rc1 QA S1: ⇧⌘O through the real menu (Commands), for My Tasks and then a selected project.
     @MainActor
     func testOpenInBrowserShortcutOpensTheCurrentPage() {
         let app = launch()
+        XCTAssertTrue(app.menuBars.menuBarItems["File"].menuItems["Open in Browser"].exists, "File → Open in Browser missing")
         let opened = element(app, "uitest.openedURL")
         app.typeKey("o", modifierFlags: [.command, .shift])
         XCTAssertTrue(opened.waitForExistence(timeout: 5), "⇧⌘O did nothing")

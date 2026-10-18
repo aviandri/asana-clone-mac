@@ -22,11 +22,11 @@ extension FocusedValues {
 }
 
 /// Menu bar commands. Workspace shortcuts live here (not on the sidebar menu's buttons) so ⌘1…⌘9
-/// work from anywhere in the main window.
+/// work from anywhere in the main window. Items that depend on session state are small Views.
 ///
-/// Items that depend on session state are small Views: on macOS 14 a `Commands` body isn't re-run
-/// when @Observable state changes, so a `.disabled(session.scope == nil)` read here stayed as it was
-/// at launch (before sign-in) and ⇧⌘O silently did nothing (rc1 QA S1). View bodies are observed.
+/// Anchor groups only to placements that exist in this app: there are no documents, so there is no
+/// Save group, and `CommandGroup(after: .saveItem)` was silently dropped on macOS 14, taking ⇧⌘O
+/// with it (rc1 QA S1). UI tests assert every item below is in its menu.
 @MainActor
 struct AppCommands: Commands {
     let session: AppSession
@@ -35,6 +35,7 @@ struct AppCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .newItem) {
             OpenTaskWindowButton(session: session)
+            OpenInBrowserButton(session: session)
         }
 
         CommandGroup(after: .toolbar) {
@@ -43,10 +44,6 @@ struct AppCommands: Commands {
 
         CommandGroup(after: .textEditing) {
             SearchButton(session: session, router: router)
-        }
-
-        CommandGroup(after: .saveItem) {
-            OpenInBrowserButton(session: session)
         }
 
         CommandMenu("Workspace") {
