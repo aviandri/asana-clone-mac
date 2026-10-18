@@ -100,7 +100,8 @@ signed but not notarized, so macOS blocks the first launch until you allow it.
    Downloads. Otherwise Archive Utility unzips the new one as `Mekari Project 2.app`, and it's easy
    to end up approving and running that copy instead.
 2. Download `MekariProject-<version>.zip` from the
-   [latest release](https://github.com/aviandri/asana-clone-mac/releases/latest).
+   [releases page](https://github.com/aviandri/asana-clone-mac/releases) (the newest, including
+   pre-releases, is at the top).
    Builds of `main` are also attached to each CI run as the `MekariProject-<sha>` artifact.
 3. Unzip it (double-click), then **drag Mekari Project.app into Applications in Finder** (replace
    the old one if asked) and launch it from there. Don't use `mv` in Terminal: the moved app keeps
