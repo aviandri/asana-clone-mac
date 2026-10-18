@@ -117,21 +117,22 @@ final class AppFlowUITests: XCTestCase {
         let opened = element(app, "uitest.openedURL")
         app.typeKey("o", modifierFlags: [.command, .shift])
         if !opened.waitForExistence(timeout: 5) {
-            print("Open in Browser: main window AX tree:\n\(app.windows.firstMatch.debugDescription)")
             // Tell "the shortcut isn't delivered" apart from "the command does nothing".
             file.click()
             item.click()
             XCTAssertTrue(opened.waitForExistence(timeout: 5), "File → Open in Browser did nothing (clicked)")
             XCTFail("⇧⌘O did nothing, but clicking the menu item worked")
         }
-        XCTAssertTrue(opened.label.contains("/my-tasks") && opened.label.contains("workspace="), opened.label)
+        // A macOS static text carries its string in `value` (its `label` is empty).
+        let url = opened.value as? String ?? ""
+        XCTAssertTrue(url.contains("/my-tasks") && url.contains("workspace="), url)
 
         let project = element(app, "sidebar.project.\(boardProject)")
         XCTAssertTrue(project.waitForExistence(timeout: 10), "project missing from the sidebar")
         project.click()
         app.typeKey("o", modifierFlags: [.command, .shift])
-        let predicate = NSPredicate(format: "label CONTAINS %@", "/projects/\(boardProject)")
+        let predicate = NSPredicate(format: "value CONTAINS %@", "/projects/\(boardProject)")
         let projectLink = XCTNSPredicateExpectation(predicate: predicate, object: opened)
-        XCTAssertEqual(XCTWaiter().wait(for: [projectLink], timeout: 5), .completed, opened.label)
+        XCTAssertEqual(XCTWaiter().wait(for: [projectLink], timeout: 5), .completed, opened.value as? String ?? "")
     }
 }
