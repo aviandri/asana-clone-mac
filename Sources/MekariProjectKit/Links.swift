@@ -47,7 +47,8 @@ public enum WebLinks {
   }
 }
 
-/// `mekariproject://task/<id>` and `mekariproject://project/<id>` (SPEC-MAC §5).
+/// `mekariproject://task/<id>` and `mekariproject://project/<id>` (SPEC-MAC §5). The id must be a
+/// UUID (as the BE issues them), so nothing else (e.g. `..%2Fusers`) can reach a request path.
 public enum DeepLink: Hashable, Sendable {
   case task(id: String)
   case project(id: String)
@@ -56,8 +57,9 @@ public enum DeepLink: Hashable, Sendable {
 
   public init?(url: URL) {
     guard url.scheme?.lowercased() == DeepLink.scheme, let kind = url.host?.lowercased() else { return nil }
-    let id = url.pathComponents.filter { $0 != "/" }.first ?? ""
-    guard !id.isEmpty else { return nil }
+    let segments = url.pathComponents.filter { $0 != "/" }
+    guard segments.count == 1, let uuid = UUID(uuidString: segments[0]) else { return nil }
+    let id = uuid.uuidString.lowercased()
     switch kind {
     case "task": self = .task(id: id)
     case "project": self = .project(id: id)
