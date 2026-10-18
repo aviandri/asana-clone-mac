@@ -1,5 +1,9 @@
 import Foundation
-#if canImport(FoundationNetworking)
+// Swift 5.10's Linux Foundation doesn't mark URL, URLRequest, HTTPURLResponse & co. Sendable yet
+// (Darwin's and Swift 6's do), so take its types as pre-concurrency there.
+#if canImport(FoundationNetworking) && compiler(<6.0)
+@preconcurrency import FoundationNetworking
+#elseif canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
 
@@ -298,11 +302,12 @@ public actor LiveMekariAPI: MekariAPI {
 /// Strict query encoding: `URLComponents.queryItems` leaves `+`, `&` and `=` alone in values, which
 /// breaks searches such as "fix & ship" or "c++".
 enum QueryEncoding {
-  private static let allowed: CharacterSet = {
+  // Computed: a stored static CharacterSet isn't Sendable on Swift 5.10's Linux Foundation.
+  private static var allowed: CharacterSet {
     var set = CharacterSet.alphanumerics
     set.insert(charactersIn: "-._~")
     return set
-  }()
+  }
 
   static func encode(_ value: String) -> String {
     value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value

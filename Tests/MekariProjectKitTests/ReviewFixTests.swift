@@ -1,6 +1,13 @@
+// Swift 5.10's Linux Foundation doesn't mark URL, URLRequest, HTTPURLResponse & co. Sendable yet
+// (Darwin's and Swift 6's do), so take its types as pre-concurrency there.
+#if canImport(FoundationNetworking) && compiler(<6.0)
+@preconcurrency import Foundation
+@preconcurrency import FoundationNetworking
+#else
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
+#endif
 #endif
 #if canImport(Glibc)
 import Glibc
