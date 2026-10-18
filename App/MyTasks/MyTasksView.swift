@@ -32,7 +32,7 @@ struct MyTasksView: View {
                 Section(group.title) {
                     ForEach(group.taskIDs, id: \.self) { id in
                         if let task = scope.tasks[id] {
-                            TaskRow(task: task, showProject: true) {
+                            TaskRow(task: task, showProject: true, canEdit: canEdit(task)) {
                                 Task { await store.toggleComplete(id) }
                             }
                             .tag(id)
@@ -44,13 +44,14 @@ struct MyTasksView: View {
         .listStyle(.inset)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
-                Button("Open in New Window") { openWindow(id: WindowID.task, value: id) }
+                Button("Open in New Window") { openTaskWindow(id) }
                 Button(scope.tasks[id]?.completed == true ? "Mark Incomplete" : "Mark Complete") {
                     Task { await store.toggleComplete(id) }
                 }
+                .disabled(!(scope.tasks[id].map(canEdit) ?? false))
             }
         } primaryAction: { ids in
-            if let id = ids.first { openWindow(id: WindowID.task, value: id) }
+            if let id = ids.first { openTaskWindow(id) }
         }
         .overlay {
             if store.groups.isEmpty {
@@ -81,6 +82,19 @@ struct MyTasksView: View {
         .task { await store.refresh() }
     }
 
+    /// Personal tasks and workspace admins: yes. Project tasks: the project role from the sidebar's
+    /// project list, not COMMENTER; unknown project → read-only (fail closed, like TaskDetailStore).
+    private func canEdit(_ task: TaskItem) -> Bool {
+        guard let projectID = task.projectId else { return true }
+        if scope.workspace.isAdmin { return true }
+        guard let project = scope.sidebar.projects.first(where: { $0.id == projectID }) else { return false }
+        return project.myRole != .commenter
+    }
+
+    private func openTaskWindow(_ id: String) {
+        openWindow(id: WindowID.task, value: TaskWindowRef(workspaceID: scope.id, taskID: id))
+    }
+
     private func addTask() {
         let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
@@ -94,7 +108,8 @@ struct MyTasksView: View {
 struct TaskRow: View {
     let task: TaskItem
     var showProject = false
-    var canEdit = true
+    /// Read-only unless the caller knows the user may edit (commenters would get a 403 flip-back).
+    var canEdit = false
     let onToggle: () -> Void
 
     var body: some View {
@@ -107,7 +122,7 @@ struct TaskRow: View {
             }
             .buttonStyle(.plain)
             .disabled(!canEdit)
-            .accessibilityLabel(task.completed ? "Mark incomplete" : "Mark complete")
+            .accessibilityLabel(task.completed ? "Mark \(task.title) incomplete" : "Mark \(task.title) complete")
 
             Text(task.title)
                 .strikethrough(task.completed)

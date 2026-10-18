@@ -55,6 +55,8 @@ struct UserPickerView: View {
         }
         .padding(10)
         .frame(width: 300, height: 320)
+        // Open with everyone listed (an empty query loads all pickable people), not "No matches".
+        .onAppear { if search.results.isEmpty { search.query = "" } }
     }
 }
 

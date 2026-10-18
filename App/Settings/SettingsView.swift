@@ -1,3 +1,4 @@
+import AppKit
 import MekariProjectFeatures
 import MekariProjectKit
 import ServiceManagement
@@ -28,19 +29,42 @@ private struct GeneralSettings: View {
     @AppStorage(SettingsKey.showInMenuBar) private var showInMenuBar = true
     @AppStorage(SettingsKey.notificationsEnabled) private var notificationsEnabled = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var needsApproval = SMAppService.mainApp.status == .requiresApproval
     @State private var loginItemError: String?
 
     var body: some View {
         Form {
             Toggle("Show in menu bar", isOn: $showInMenuBar)
             Toggle("Notify me about new inbox items", isOn: $notificationsEnabled)
-            Toggle("Launch at login", isOn: $launchAtLogin)
-                .onChange(of: launchAtLogin) { _, enabled in setLaunchAtLogin(enabled) }
+            if needsApproval {
+                // Registered, but macOS wants the user's OK; a toggle would just flip back.
+                LabeledContent("Launch at login") {
+                    HStack {
+                        Text("Needs approval in System Settings").foregroundStyle(.secondary)
+                        Button("Open Login Items…") { SMAppService.openSystemSettingsLoginItems() }
+                    }
+                }
+            } else {
+                Toggle("Launch at login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, enabled in setLaunchAtLogin(enabled) }
+            }
             if let loginItemError {
                 Text(loginItemError).font(.caption).foregroundStyle(.red)
             }
         }
         .formStyle(.grouped)
+        .task {
+            // The user may approve the login item in System Settings meanwhile (async sequence, no Combine).
+            for await _ in NotificationCenter.default.notifications(named: NSApplication.didBecomeActiveNotification) {
+                refreshLoginItemStatus()
+            }
+        }
+    }
+
+    private func refreshLoginItemStatus() {
+        let status = SMAppService.mainApp.status
+        needsApproval = status == .requiresApproval
+        launchAtLogin = status == .enabled
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -49,6 +73,7 @@ private struct GeneralSettings: View {
         do {
             if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
             loginItemError = nil
+            refreshLoginItemStatus()
         } catch {
             loginItemError = "Couldn’t change the login item: \(error.localizedDescription)"
             launchAtLogin = isEnabled

@@ -33,11 +33,10 @@ struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: session.notice)
-        .task {
-            if session.state == .restoring { await session.start() }
-        }
         .task(id: session.notice) {
-            guard session.notice != nil else { return }
+            guard let notice = session.notice else { return }
+            // VoiceOver users hear the toast too.
+            AccessibilityNotification.Announcement(notice).post()
             try? await Task.sleep(for: .seconds(4))
             session.dismissNotice()
         }

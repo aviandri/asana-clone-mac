@@ -28,7 +28,9 @@ struct AppCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("Open Task in New Window") {
-                if let id = selectedTaskID { openWindow(id: WindowID.task, value: id) }
+                if let id = selectedTaskID, let workspaceID = session.current?.id {
+                    openWindow(id: WindowID.task, value: TaskWindowRef(workspaceID: workspaceID, taskID: id))
+                }
             }
             .keyboardShortcut("o")
             .disabled(selectedTaskID == nil)

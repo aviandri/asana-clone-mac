@@ -4,7 +4,14 @@ import SwiftUI
 
 @main
 struct MekariProjectApp: App {
-    @State private var session = AppBootstrap.makeSession()
+    @State private var session: AppSession
+
+    init() {
+        let session = AppBootstrap.makeSession()
+        _session = State(initialValue: session)
+        // Once per launch, at the App level: a task window restored on its own needs a session too.
+        Task { await session.start() }
+    }
 
     var body: some Scene {
         // One main window in v1 (SPEC-MAC §4: one current workspace per app).
@@ -15,8 +22,8 @@ struct MekariProjectApp: App {
         .commands { AppCommands(session: session) }
 
         // ⌘O / double-click: a task in its own window, sharing the scope's TaskDetailStore.
-        WindowGroup("Task", id: WindowID.task, for: String.self) { $taskID in
-            TaskWindowView(session: session, taskID: $taskID)
+        WindowGroup("Task", id: WindowID.task, for: TaskWindowRef.self) { $ref in
+            TaskWindowView(session: session, ref: $ref)
         }
         .defaultSize(width: 520, height: 700)
 

@@ -81,7 +81,9 @@ struct TaskInspectorView: View {
             }
             CommitTextField(value: task.title, placeholder: "Task name", font: .title2.weight(.semibold), canEdit: store.canEdit) { title in
                 let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { Task { await store.setTitle(trimmed) } }
+                guard !trimmed.isEmpty else { return false } // an empty name reverts
+                Task { await store.setTitle(trimmed) }
+                return true
             }
             .accessibilityLabel("Task name")
         }
@@ -134,16 +136,19 @@ struct TaskInspectorView: View {
     }
 }
 
-/// A text field that edits a local copy and calls `commit` on Return or when it loses focus.
-/// Follows outside changes while it isn't being edited.
+/// A text field that edits a local copy and commits on Return, on focus loss, and when the view goes
+/// away (switching to a subtask, ⌘W): macOS buttons don't take focus, so focus loss alone would drop
+/// the draft. `commit` returns false to reject the value (the field reverts). Outside changes, such as
+/// the store reverting a failed save, show unless there are uncommitted edits.
 struct CommitTextField: View {
     let value: String
     var placeholder = ""
     var font: Font = .body
     var canEdit = true
-    let commit: (String) -> Void
+    let commit: (String) -> Bool
 
     @State private var text = ""
+    @State private var dirty = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -153,13 +158,17 @@ struct CommitTextField: View {
             .focused($focused)
             .disabled(!canEdit)
             .onAppear { text = value }
-            .onChange(of: value) { _, new in if !focused { text = new } }
+            .onChange(of: text) { _, new in if new != value { dirty = true } }
+            .onChange(of: value) { _, new in if !dirty { text = new } }
             .onChange(of: focused) { _, isFocused in if !isFocused { commitIfChanged() } }
             .onSubmit(commitIfChanged)
+            .onDisappear(perform: commitIfChanged)
     }
 
     private func commitIfChanged() {
-        if text != value { commit(text) }
+        defer { dirty = false }
+        guard dirty, text != value else { return }
+        if !commit(text) { text = value }
     }
 }
 
@@ -199,6 +208,8 @@ struct DescriptionEditor: View {
                 .onChange(of: focused) { _, isFocused in
                     if !isFocused, draft != text { commit(draft) }
                 }
+                // Switching tasks or closing the window doesn't move focus first on macOS.
+                .onDisappear { if draft != text { commit(draft) } }
         }
     }
 }
@@ -232,36 +243,74 @@ struct AssigneeField: View {
     }
 }
 
+/// Due date: a button that opens a calendar popover. The choice is saved once, when the popover
+/// closes (one PATCH, one activity entry), not on every click or arrow key.
 struct DueDateField: View {
     let date: LocalDate?
     let canEdit: Bool
     let onChange: (LocalDate?) -> Void
 
+    @State private var picking = false
+    @State private var draft = Date()
+    /// The calendar was changed since the popover opened (quick picks save on their own).
+    @State private var touched = false
+
     var body: some View {
         HStack(spacing: 6) {
-            if let date {
-                DatePicker("Due date", selection: Binding(
-                    get: { date.date() },
-                    set: { new in
-                        let local = LocalDate(new)
-                        if local != date { onChange(local) }
+            Button {
+                draft = (date ?? .today()).date()
+                touched = false
+                picking = true
+            } label: {
+                if let date {
+                    Label(Formatting.due(date, today: .today()), systemImage: "calendar")
+                        .foregroundStyle(Formatting.isOverdue(date, today: .today()) ? .red : .primary)
+                } else {
+                    Label("Add due date", systemImage: "calendar.badge.plus")
+                }
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(date.map { "Due date: \(Formatting.due($0, today: .today()))" } ?? "Add due date")
+            .popover(isPresented: $picking, arrowEdge: .leading) {
+                VStack(alignment: .leading, spacing: 8) {
+                    DatePicker("Due date", selection: $draft, displayedComponents: .date)
+                        .datePickerStyle(.graphical)
+                        .labelsHidden()
+                        .onChange(of: draft) { _, _ in touched = true }
+                    HStack {
+                        Button("Today") { pick(.today()) }
+                        Button("Tomorrow") { pick(LocalDate.today().adding(days: 1)) }
+                        Spacer()
+                        if date != nil {
+                            Button("Clear", role: .destructive) { pick(nil) }
+                        }
+                        Button("Done") { picking = false }
+                            .keyboardShortcut(.defaultAction)
                     }
-                ), displayedComponents: .date)
-                .labelsHidden()
-                .datePickerStyle(.field)
-                Text(Formatting.due(date, today: .today()))
-                    .font(.caption)
-                    .foregroundStyle(Formatting.isOverdue(date, today: .today()) ? .red : .secondary)
+                }
+                .padding(12)
+                .onDisappear {
+                    // Closing the popover (Done, Escape, click outside) saves the calendar choice once.
+                    let chosen = LocalDate(draft)
+                    if touched, chosen != date { onChange(chosen) }
+                    touched = false
+                }
+            }
+            if date != nil {
                 Button("Clear due date", systemImage: "xmark.circle.fill") { onChange(nil) }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
-            } else {
-                Button("Add due date") { onChange(.today()) }
-                    .buttonStyle(.borderless)
             }
         }
         .disabled(!canEdit)
+    }
+
+    /// Quick picks save immediately and close the popover without a second save.
+    private func pick(_ value: LocalDate?) {
+        touched = false
+        if value != date { onChange(value) }
+        picking = false
     }
 }
 
@@ -292,7 +341,7 @@ struct SubtasksSection: View {
                     Spacer()
                     if let assignee = subtask.assignee { Avatar(user: assignee, size: 16) }
                 }
-                .accessibilityIdentifier("task.row.\(subtask.id)")
+                .accessibilityIdentifier("subtask.row.\(subtask.id)")
             }
             if store.canEdit {
                 HStack(spacing: 8) {
