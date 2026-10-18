@@ -14,6 +14,7 @@ Status: under construction (v1 scaffold).
 | `Sources/MekariProjectKit/` | models, API client, token store (platform-neutral) |
 | `Sources/MekariProjectFeatures/` | `@Observable` view models (Kit + Observation only, no SwiftUI) |
 | `Tests/` | XCTest, run on Linux and macOS; `Tests/ContractTests` needs a live backend |
+| `UITests/` | XCUITest smoke (macOS only): launches with `-UITestFakeAPI`, finds `sidebar.myTasks` |
 | `App/` | the macOS app target (SwiftUI), `App/Resources/Assets.xcassets` |
 | `project.yml` | XcodeGen spec → `MekariProject.xcodeproj` (generated, not committed) |
 
