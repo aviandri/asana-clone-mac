@@ -77,30 +77,3 @@ struct ProjectListView: View {
         openWindow(id: WindowID.task, value: TaskWindowRef(workspaceID: scope.id, taskID: id))
     }
 }
-
-/// "Add task" inline field (Return adds; stays focused for the next one).
-@MainActor
-struct AddTaskRow: View {
-    var placeholder = "Add task"
-    let onAdd: (String) -> Void
-    @State private var title = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "plus").foregroundStyle(.secondary).accessibilityHidden(true)
-            TextField(placeholder, text: $title)
-                .textFieldStyle(.plain)
-                .focused($focused)
-                .accessibilityLabel("New task title")
-                .onSubmit {
-                    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { return }
-                    title = ""
-                    onAdd(trimmed)
-                    focused = true
-                }
-        }
-        .selectionDisabled()
-    }
-}
