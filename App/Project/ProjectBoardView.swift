@@ -4,6 +4,7 @@ import SwiftUI
 
 /// Board view: a column per section; drag cards between and within columns. A drop on a card puts the
 /// task before it; a drop on the column's empty space or "Add task" puts it at the end.
+@MainActor
 struct ProjectBoardView: View {
     let scope: WorkspaceScope
     let store: ProjectStore
@@ -25,6 +26,7 @@ struct ProjectBoardView: View {
     }
 }
 
+@MainActor
 private struct BoardColumn: View {
     let scope: WorkspaceScope
     let store: ProjectStore
@@ -84,6 +86,7 @@ private struct BoardColumn: View {
     }
 }
 
+@MainActor
 private struct BoardCard: View {
     let scope: WorkspaceScope
     let task: TaskItem

@@ -4,6 +4,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Workspace menu, My Tasks, Inbox (unread badge), and the workspace's projects (SPEC-MAC §5).
+@MainActor
 struct SidebarView: View {
     let session: AppSession
     let scope: WorkspaceScope
@@ -63,6 +64,7 @@ struct SidebarView: View {
 }
 
 /// The workspace switcher at the top of the sidebar. ⌘1…⌘9 live in the Workspace menu (AppCommands).
+@MainActor
 struct WorkspaceMenu: View {
     let session: AppSession
 

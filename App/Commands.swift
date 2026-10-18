@@ -15,6 +15,7 @@ extension FocusedValues {
 
 /// Menu bar commands. Workspace shortcuts live here (not on the sidebar menu's buttons) so ⌘1…⌘9
 /// work from anywhere in the main window.
+@MainActor
 struct AppCommands: Commands {
     let session: AppSession
     let router: AppRouter

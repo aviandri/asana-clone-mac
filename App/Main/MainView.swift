@@ -8,6 +8,7 @@ enum SidebarItem: Hashable {
 
 /// Sidebar | content | inspector (SPEC-MAC §5). One instance per workspace scope; navigation state
 /// lives in the AppRouter so deep links, notifications and the menu bar can drive it.
+@MainActor
 struct MainView: View {
     let session: AppSession
     let scope: WorkspaceScope

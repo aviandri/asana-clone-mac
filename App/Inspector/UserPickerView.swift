@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// People picker backed by `UserSearch` (`GET /users?q=`, debounced in Features). Guests get a badge (W8).
+@MainActor
 struct UserPickerView: View {
     @State private var search: UserSearch
     var selectedID: String?
@@ -60,6 +61,7 @@ struct UserPickerView: View {
     }
 }
 
+@MainActor
 struct PersonRow: View {
     let person: PickableUser
     var isSelected = false

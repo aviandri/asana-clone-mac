@@ -12,6 +12,7 @@ struct TaskWindowRef: Codable, Hashable {
 
 /// A task in its own window (⌘O / double-click). Reuses the scope's cached TaskDetailStore, so edits
 /// show up in the main window too.
+@MainActor
 struct TaskWindowView: View {
     let session: AppSession
     @Binding var ref: TaskWindowRef?
@@ -41,6 +42,7 @@ struct TaskWindowView: View {
 }
 
 /// Shown in a task window after the app switched away from the task's workspace.
+@MainActor
 private struct OtherWorkspaceView: View {
     let session: AppSession
     let workspaceID: String

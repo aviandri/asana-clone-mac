@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Sign-in, the main split view, or "no workspace", depending on the session.
+@MainActor
 struct RootView: View {
     let session: AppSession
     @Bindable var router: AppRouter
@@ -52,6 +53,7 @@ struct RootView: View {
 }
 
 /// Signed in but not a member of any workspace: joining or creating one happens on the web (SPEC-MAC §1).
+@MainActor
 struct NoWorkspaceView: View {
     let session: AppSession
     @Environment(\.openURL) private var openURL

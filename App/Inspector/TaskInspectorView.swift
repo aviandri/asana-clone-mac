@@ -4,6 +4,7 @@ import SwiftUI
 
 /// The task inspector (SPEC-MAC §5): every v1 field editable in place, subtasks, followers,
 /// comments and activity with a composer. Text fields commit on Return or when focus leaves.
+@MainActor
 struct TaskInspectorView: View {
     let session: AppSession
     let scope: WorkspaceScope
@@ -149,6 +150,7 @@ struct TaskInspectorView: View {
 /// away (switching to a subtask, ⌘W): macOS buttons don't take focus, so focus loss alone would drop
 /// the draft. `commit` returns false to reject the value (the field reverts). Outside changes, such as
 /// the store reverting a failed save, show unless there are uncommitted edits.
+@MainActor
 struct CommitTextField: View {
     let value: String
     var placeholder = ""
@@ -182,6 +184,7 @@ struct CommitTextField: View {
 }
 
 /// Multi-line description; commits when focus leaves the editor.
+@MainActor
 struct DescriptionEditor: View {
     let text: String
     let canEdit: Bool
@@ -223,6 +226,7 @@ struct DescriptionEditor: View {
     }
 }
 
+@MainActor
 struct AssigneeField: View {
     let scope: WorkspaceScope
     let assignee: UserSummary?
@@ -254,6 +258,7 @@ struct AssigneeField: View {
 
 /// Due date: a button that opens a calendar popover. The choice is saved once, when the popover
 /// closes (one PATCH, one activity entry), not on every click or arrow key.
+@MainActor
 struct DueDateField: View {
     let date: LocalDate?
     let canEdit: Bool
@@ -323,6 +328,7 @@ struct DueDateField: View {
     }
 }
 
+@MainActor
 struct SubtasksSection: View {
     let store: TaskDetailStore
     let subtasks: [TaskItem]
@@ -369,6 +375,7 @@ struct SubtasksSection: View {
     }
 }
 
+@MainActor
 struct FollowersSection: View {
     let scope: WorkspaceScope
     let store: TaskDetailStore

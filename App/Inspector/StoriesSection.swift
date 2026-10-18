@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 /// Comments and activity, oldest first (`GET /tasks/:id/stories`).
+@MainActor
 struct StoriesSection: View {
     let stories: [Story]
     let me: UserSummary
@@ -32,6 +33,7 @@ struct StoriesSection: View {
     }
 }
 
+@MainActor
 struct CommentRow: View {
     let comment: Comment
 
@@ -77,6 +79,7 @@ enum CommentText {
     }
 }
 
+@MainActor
 struct ActivityRow: View {
     let activity: Activity
 
@@ -124,6 +127,7 @@ struct ActivityRow: View {
 }
 
 /// Composer pinned under the stories: ⌘↩ sends; a trailing "@word" offers people to mention.
+@MainActor
 struct CommentComposerView: View {
     @Bindable var composer: CommentComposer
 

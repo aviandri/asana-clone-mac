@@ -3,6 +3,7 @@ import MekariProjectKit
 import SwiftUI
 
 @main
+@MainActor
 struct MekariProjectApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var session: AppSession
