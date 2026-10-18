@@ -7,7 +7,18 @@ options:
   createIntermediateGroups: true
   # objectVersion 63: the newest format Xcode 15.3/15.4 opens (xcodegen's default, 77, needs Xcode 16).
   projectFormat: xcode15_3
+# UITest = Release (optimised) plus the fake-API boot path, for CI's Release-mode UI tests and launch
+# smoke. The shipped Release archive compiles the fake path out (AppBootstrap: #if DEBUG || UITEST).
+configs:
+  Debug: debug
+  Release: release
+  UITest: release
 settings:
+  configs:
+    UITest:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) UITEST"
+      # The @testable hosted test bundle builds against it too.
+      ENABLE_TESTABILITY: YES
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
