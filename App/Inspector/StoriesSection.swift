@@ -126,9 +126,13 @@ struct ActivityRow: View {
 }
 
 /// Composer pinned under the stories: ⌘↩ sends; a trailing "@word" offers people to mention.
+/// The field sits in a raised box with a visible border (rc1 QA U1: a roundedBorder field and a
+/// default-style button were dark grey on dark grey) and gets the full width.
 @MainActor
 struct CommentComposerView: View {
     @Bindable var composer: CommentComposer
+    @FocusState private var focused: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -150,20 +154,44 @@ struct CommentComposerView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
                 .accessibilityLabel("Mention someone")
             }
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField("Add a comment… (@ to mention)", text: $composer.draft, axis: .vertical)
-                    .lineLimit(1...6)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("Comment")
+            TextField("Add a comment…", text: $composer.draft, axis: .vertical)
+                .lineLimit(1...6)
+                .textFieldStyle(.plain)
+                .focused($focused)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 6).fill(fieldFill))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(focused ? Color.accentColor : Color.primary.opacity(strokeOpacity), lineWidth: focused ? 2 : 1)
+                )
+                .accessibilityLabel("Comment")
+                .accessibilityHint("Type @ to mention someone. Command-Return sends.")
+            HStack(spacing: 8) {
+                Text("@ to mention · ⌘↩ to send")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                Spacer(minLength: 0)
                 Button {
                     Task { await composer.send() }
                 } label: {
                     Label("Comment", systemImage: "paperplane.fill")
                 }
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!composer.canSend)
                 .help("Send (⌘↩)")
             }
         }
     }
+
+    /// Dark: lifted above the inspector background (white 8%, about #424242 on #323232). Light: the
+    /// usual white text background.
+    private var fieldFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color(nsColor: .textBackgroundColor)
+    }
+
+    /// Field edge at about 3:1 against its surroundings in both appearances.
+    private var strokeOpacity: Double { colorScheme == .dark ? 0.3 : 0.4 }
 }
