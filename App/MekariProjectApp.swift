@@ -16,7 +16,7 @@ struct MekariProjectApp: App {
 
         // ⌘O / double-click: a task in its own window, sharing the scope's TaskDetailStore.
         WindowGroup("Task", id: WindowID.task, for: String.self) { $taskID in
-            TaskWindowView(session: session, taskID: taskID)
+            TaskWindowView(session: session, taskID: $taskID)
         }
         .defaultSize(width: 520, height: 700)
 
