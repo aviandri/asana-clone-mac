@@ -24,6 +24,16 @@ jobs:
       - run: swift build --build-tests
       - run: swift test --skip-build
 
+  linux-kit-swift510:
+    # Same as linux-kit on Swift 5.10 (Xcode 15.4's compiler), the oldest toolchain we support.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: swift:5.10
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build --build-tests
+      - run: swift test --skip-build
+
   linux-contract:
     # Like the BE `contract` job: BE main, migrated + full seed, then the Swift contract tests.
     runs-on: ubuntu-latest
@@ -160,10 +170,29 @@ jobs:
           path: build/MekariProject-*.zip
           retention-days: 30
 
+  macos-xcode15:
+    # Oldest supported Mac toolchain: macOS 14 + Xcode 15.4 (Swift 5.10, macOS 14.5 SDK), so a
+    # developer Mac on Sonoma can build locally. Build + test only, no archive.
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      PROJECT: MekariProject.xcodeproj
+      SCHEME: MekariProjectApp
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - run: xcodebuild -version && swift --version
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Build and test the app
+        run: |
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO build test
+
   release:
     # v* tags only: a GitHub Release with the universal zip and notes generated from merged PRs.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-kit, linux-contract, macos-app]
+    needs: [linux-kit, linux-kit-swift510, linux-contract, macos-app, macos-xcode15]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -179,6 +208,17 @@ jobs:
         run: |
           prerelease=()
           [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=(--prerelease)
+          notes=$(cat <<'NOTES'
+          Universal (Apple Silicon + Intel), macOS 14+. Unsigned (ad-hoc), not notarized. To install:
+
+          1. Unzip and **move Mekari Project.app to Applications first**, then launch it from there.
+          2. If macOS says it "can't be opened because Apple cannot check it for malicious software": click OK, open **System Settings → Privacy & Security**, scroll to "Mekari Project was blocked…", click **Open Anyway** and confirm. Right-click → Open also works on macOS 14.
+          3. Or in Terminal: `xattr -dr com.apple.quarantine "/Applications/Mekari Project.app"`
+          4. Delete any copy left in Downloads.
+
+          The proper fix is Developer ID signing + notarization (needs an Apple Developer account). See the README for details.
+          NOTES
+          )
           gh release create "$GITHUB_REF_NAME" dist/*.zip -R "$GITHUB_REPOSITORY" --verify-tag \
             --title "Mekari Project ${GITHUB_REF_NAME#v}" "${prerelease[@]}" --generate-notes \
-            --notes "Universal (Apple Silicon + Intel), macOS 14+. Unsigned: right-click → Open the first time, or run \`xattr -dr com.apple.quarantine \"/Applications/Mekari Project.app\"\`. See the README for install steps."
+            --notes "$notes"
