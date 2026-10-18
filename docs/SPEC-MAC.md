@@ -75,7 +75,7 @@ Rules:
   `Cookie: sid=<token>` on every request. A `401` anywhere → clear the token, return to sign-in.
   No BE change needed.
 - **Workspace header:** every request except `/auth/*` and `/workspaces` sends `X-Workspace-Id` for
-  the window's current workspace (BE §12 "Current workspace"). On switch: `POST
+  the app's current workspace (one per app, shared by all windows and the menu bar) (BE §12 "Current workspace"). On switch: `POST
   /workspaces/:id/switch`, then reload all stores. A `404` from a scoped collection endpoint while
   a header is set → refetch `/auth/me` without a header and adopt its `currentWorkspace` (lost
   access, same as the web FE).
@@ -117,9 +117,10 @@ password", 429: rate limited). Links: "Accept an invite in the browser".
 - **Inbox:** notifications newest first, unread bold; click marks read and opens the task.
   "Mark all as read".
 - **Search (⌘K):** a palette (min 2 chars, debounce 250 ms) with Tasks / Projects / People groups.
-  Return opens the result.
+  Return opens the result (people: `mailto:`, like the web palette).
 - **Open in Browser (⇧⌘O):** opens the current project or task on the web app (base = server URL;
-  paths `/projects/:id`, `/projects/:id?task=:taskId`, `/my-tasks?task=:id`).
+  paths `/projects/:id`, `/projects/:id?task=:taskId`, `/my-tasks?task=:id`, `/workspace/settings`), always
+  with `?workspace=<current id>` appended so the web app switches to the same workspace on load.
 
 **Menu bar extra** (`MenuBarExtra`, window style): unread count in the icon; list of overdue and
 due-today tasks (complete inline); a quick-add field (title + optional due date, creates a personal
