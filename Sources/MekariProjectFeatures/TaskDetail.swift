@@ -16,28 +16,34 @@ public final class TaskDetailStore {
   @ObservationIgnored private let tasks: TaskCache
   @ObservationIgnored private let me: UserSummary
   @ObservationIgnored private let workspaceRole: WorkspaceRole
-  private var projectRole: ProjectRole?
-  /// False until the project role is known; project tasks stay read-only until then (fail closed).
-  private var projectRoleKnown = false
+  /// What the scope already knows about a project (the sidebar's, with my role), until our own fetch.
+  @ObservationIgnored private let knownProject: (String) -> Project?
+  /// My role in a project, as fetched on `load()`.
+  private var fetchedRole: (projectID: String, role: ProjectRole?)?
 
   public init(api: any MekariAPI, tasks: TaskCache, taskID: String, me: UserSummary, workspaceRole: WorkspaceRole,
-              clock: any Clock<Duration> = ContinuousClock()) {
+              clock: any Clock<Duration> = ContinuousClock(), knownProject: @escaping (String) -> Project? = { _ in nil }) {
     self.api = api
     self.tasks = tasks
     self.taskID = taskID
     self.me = me
     self.workspaceRole = workspaceRole
+    self.knownProject = knownProject
     composer = CommentComposer(api: api, taskID: taskID, users: UserSearch(api: api, clock: clock))
     composer.onSent = { [weak self] comment in self?.stories.append(.comment(comment)) }
   }
 
   public var task: TaskDetail? { tasks.detail(taskID) }
 
-  /// Personal tasks: always. Project tasks: workspace admins and every member but COMMENTERs.
+  /// Personal tasks: always. Project tasks: workspace admins and every member but COMMENTERs. The role
+  /// comes from our own fetch, else what the scope already knows (so the inspector isn't briefly
+  /// read-only); while neither knows the project, it's read-only (fail closed).
   public var canEdit: Bool {
-    guard let task else { return false }
-    if task.projectId == nil || workspaceRole == .admin { return true }
-    return projectRoleKnown && projectRole != .commenter
+    guard let task = tasks[taskID] else { return false }
+    guard let projectID = task.projectId, workspaceRole != .admin else { return true }
+    if let fetchedRole, fetchedRole.projectID == projectID { return fetchedRole.role != .commenter }
+    guard let project = knownProject(projectID) else { return false }
+    return project.myRole != .commenter
   }
 
   public var isFollowing: Bool { task?.followers.contains { $0.id == me.id } ?? false }
@@ -52,10 +58,9 @@ public final class TaskDetailStore {
       stories = loadedStories
       if let projectID = detail.projectId {
         do {
-          projectRole = try await api.project(projectID).myRole
-          projectRoleKnown = true
+          fetchedRole = (projectID, try await api.project(projectID).myRole)
         } catch {
-          projectRoleKnown = false
+          fetchedRole = nil // back to what the scope knows, or read-only
         }
       }
       phase = .loaded
