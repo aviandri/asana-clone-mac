@@ -66,8 +66,7 @@ enum CommentText {
         for segment in segments {
             switch segment {
             case .text(let text):
-                let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                out += (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+                out += Formatting.markdown(text)
             case .mention(let name, _):
                 var token = AttributedString("@\(name)")
                 token.foregroundColor = .accentColor

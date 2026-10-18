@@ -9,7 +9,10 @@ import SwiftUI
 @MainActor @Observable
 final class AppRouter {
     private(set) var item: SidebarItem? = .myTasks
-    var selectedTask: String?
+    /// Written only through `selectTask` / navigation, never directly: an @Observable setter notifies
+    /// even when the value is unchanged, and a List(selection:) that writes back its own selection
+    /// would then update again in the same frame ("tried to update multiple times per frame").
+    private(set) var selectedTask: String?
     var showSearch = false
     /// "You don't have access" and friends, shown as an alert by the main window.
     var alert: String?
@@ -27,19 +30,25 @@ final class AppRouter {
     func select(_ item: SidebarItem?) {
         guard item != self.item else { return }
         self.item = item
-        selectedTask = nil
+        selectTask(nil)
+    }
+
+    /// A task list click, the inspector's subtask links: one write, and none when nothing changed.
+    func selectTask(_ id: String?) {
+        guard id != selectedTask else { return }
+        selectedTask = id
     }
 
     func open(_ target: NavigationTarget) {
         switch target {
         case .task(let id, let projectID):
-            item = projectID.map(SidebarItem.project) ?? .myTasks
-            selectedTask = id
+            setItem(projectID.map(SidebarItem.project) ?? .myTasks)
+            selectTask(id)
         case .project(let id):
-            item = .project(id)
-            selectedTask = nil
+            setItem(.project(id))
+            selectTask(nil)
         }
-        showSearch = false
+        if showSearch { showSearch = false }
     }
 
     func handle(_ result: DeepLinkResult) {
@@ -51,9 +60,13 @@ final class AppRouter {
 
     /// A new workspace starts on My Tasks.
     func reset() {
-        item = .myTasks
-        selectedTask = nil
-        showSearch = false
+        setItem(.myTasks)
+        selectTask(nil)
+        if showSearch { showSearch = false }
+    }
+
+    private func setItem(_ new: SidebarItem?) {
+        if new != item { item = new }
     }
 
     /// Call when the session's scope changes: a switch the user made (or lost access) starts over on

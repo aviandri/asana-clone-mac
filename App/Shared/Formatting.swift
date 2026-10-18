@@ -33,6 +33,13 @@ enum Formatting {
         f.unitsStyle = .abbreviated
         return f.localizedString(for: date, relativeTo: now)
     }
+
+    /// Basic inline markdown (bold, italic, code, links) as in the web; whitespace and line breaks
+    /// are kept as typed. Text that doesn't parse is shown as-is.
+    static func markdown(_ text: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+    }
 }
 
 extension Priority {

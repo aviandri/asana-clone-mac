@@ -183,46 +183,92 @@ struct CommitTextField: View {
     }
 }
 
-/// Multi-line description; commits when focus leaves the editor.
+/// The description, rendered as inline markdown like comments (SPEC-MAC §5); a click switches an
+/// editor to the plain-text editor, which commits when focus leaves it.
 @MainActor
 struct DescriptionEditor: View {
     let text: String
     let canEdit: Bool
     let commit: (String) -> Void
 
+    @State private var editing = false
     @State private var draft = ""
     @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Description").font(.headline)
-            TextEditor(text: $draft)
-                .font(.body)
-                .frame(minHeight: 70)
-                .scrollContentBackground(.hidden)
-                .padding(6)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
-                .overlay(alignment: .topLeading) {
-                    if draft.isEmpty && !focused {
-                        Text("What is this task about?")
-                            .foregroundStyle(.tertiary)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 6)
-                            .allowsHitTesting(false)
-                    }
-                }
-                .focused($focused)
-                .disabled(!canEdit)
-                .accessibilityLabel("Description")
-                .onAppear { draft = text }
-                .onChange(of: text) { _, new in if !focused { draft = new } }
-                .onChange(of: focused) { _, isFocused in
-                    if !isFocused, draft != text { commit(draft) }
-                }
-                // Switching tasks or closing the window doesn't move focus first on macOS.
-                .onDisappear { if draft != text { commit(draft) } }
+            if editing {
+                editor
+            } else {
+                rendered
+            }
         }
+    }
+
+    private var rendered: some View {
+        Group {
+            if text.isEmpty {
+                Text(canEdit ? "What is this task about?" : "No description")
+                    .foregroundStyle(.tertiary)
+            } else if canEdit {
+                Text(Formatting.markdown(text))
+            } else {
+                Text(Formatting.markdown(text)).textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 70, alignment: .topLeading)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 6)
+        .background(box)
+        .contentShape(Rectangle())
+        .onTapGesture { if canEdit { beginEditing() } }
+        .help(canEdit ? "Click to edit" : "")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Description")
+        .accessibilityValue(text)
+        .accessibilityAddTraits(canEdit ? .isButton : [])
+        .accessibilityRemoveTraits(canEdit ? [] : .isButton)
+        .accessibilityAction { if canEdit { beginEditing() } }
+        .accessibilityIdentifier("inspector.description")
+    }
+
+    private var editor: some View {
+        TextEditor(text: $draft)
+            .font(.body)
+            .frame(minHeight: 70)
+            .scrollContentBackground(.hidden)
+            .padding(6)
+            .background(box)
+            .focused($focused)
+            .accessibilityLabel("Description")
+            .accessibilityIdentifier("inspector.descriptionEditor")
+            .onAppear {
+                draft = text
+                focused = true
+            }
+            .onChange(of: text) { _, new in if !focused { draft = new } }
+            .onChange(of: focused) { _, isFocused in
+                guard !isFocused else { return }
+                if draft != text { commit(draft) }
+                // Leaving edit mode removes the editor; its onDisappear must not commit again.
+                draft = text
+                editing = false
+            }
+            .onExitCommand { focused = false }
+            // Switching tasks or closing the window doesn't move focus first on macOS.
+            .onDisappear { if draft != text { commit(draft) } }
+    }
+
+    private var box: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .fill(Color(nsColor: .textBackgroundColor))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+    }
+
+    private func beginEditing() {
+        draft = text
+        editing = true
     }
 }
 
