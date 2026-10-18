@@ -411,7 +411,7 @@ public enum DeepLinkResult: Equatable { case open(NavigationTarget), noAccess }
   public func upsert(_ detail: TaskDetail)
   public func remove(_ id: String)
   /// Applies `changes` locally at once, PATCHes, then stores the server's TaskDetail; reverts on error.
-  public func update(_ id: String, _ changes: TaskChanges) async throws   // always APIError
+  public func update(_ id: String, _ changes: TaskChanges, assignee: UserSummary?? = .none) async throws   // always APIError
 }
 ```
 
@@ -595,3 +595,15 @@ public func submit() async                           // personal task assigned t
    and tell the other side.
 5. `TaskCache` is one observed dictionary, so any task edit re-renders the visible rows. That's fine at v1
    sizes; if profiling says otherwise, switch to per-task observable boxes behind the same subscript.
+6. **Added in PR 3 (additive only; the frozen names are unchanged):**
+   - `TaskCache.update(…, assignee:)` shows a new assignee before the server answers.
+   - Stores that need "today" take `now: () -> Date` next to `calendar` (`MyTasksStore`, `WorkspaceScope`,
+     `AppSession`).
+   - Extra read-only conveniences: `AppSession.me`, `AppSession.SignInError.message` (SPEC-MAC §5 copy),
+     `TaskDetailStore.isFollowing`, `ProjectStore.hasUnsectionedTasks`, `SearchStore.lastError`,
+     `QuickAddModel.canSubmit`, `CommentComposer.lastError` / `clearError()`, `DueBucket.title`,
+     `NotificationPoller.mode` / `isRunning`.
+   - `LocalNotice` is nested: `NotificationPoller.LocalNotice` (also `Identifiable`).
+   - The scaffold's `AppModel` (and Kit's `ServerConfiguration`) stay until the app shell (PR 4) moves to
+     `AppSession`; PR 4 deletes them.
+

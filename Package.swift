@@ -14,8 +14,8 @@ let package = Package(
         .target(name: "MekariProjectKit"),
         .target(name: "MekariProjectFeatures", dependencies: ["MekariProjectKit"]),
         .testTarget(name: "MekariProjectKitTests", dependencies: ["MekariProjectKit"]),
-        .testTarget(name: "MekariProjectFeaturesTests", dependencies: ["MekariProjectFeatures"]),
+        .testTarget(name: "MekariProjectFeaturesTests", dependencies: ["MekariProjectFeatures", "MekariProjectKit"]),
         // Hit a real seeded backend when MP_BASE_URL is set; skipped otherwise.
-        .testTarget(name: "ContractTests", dependencies: ["MekariProjectKit"]),
+        .testTarget(name: "ContractTests", dependencies: ["MekariProjectKit", "MekariProjectFeatures"]),
     ]
 )
