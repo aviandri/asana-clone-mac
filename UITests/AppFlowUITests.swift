@@ -10,11 +10,26 @@ final class AppFlowUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// Launches against the fake API with the main window up and the app frontmost. On a busy real
+    /// desktop the first window can be slow and another app can keep focus, so typeKey and menu
+    /// clicks would fail ("is not foreground"); CI runners behave the same either way.
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-UITestFakeAPI"]
+        // No restored window state from earlier runs (e.g. the test that closes the main window).
+        app.launchArguments = ["-UITestFakeAPI", "-ApplePersistenceIgnoreState", "YES"]
         app.launch()
-        XCTAssertTrue(element(app, "sidebar.myTasks").waitForExistence(timeout: 10), "main window didn't appear")
+        app.activate()
+        let sidebar = element(app, "sidebar.myTasks")
+        if !sidebar.waitForExistence(timeout: 20) {
+            // Last resort: the Window menu lists the main window and reopens it.
+            let item = app.menuBars.menuBarItems["Window"].menuItems["Mekari Project"]
+            if item.exists {
+                app.menuBars.menuBarItems["Window"].click()
+                item.click()
+            }
+        }
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), "main window didn't appear")
+        app.activate()
         return app
     }
 
