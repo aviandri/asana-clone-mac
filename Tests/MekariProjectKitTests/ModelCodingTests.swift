@@ -82,7 +82,7 @@ final class ModelCodingTests: XCTestCase {
 
   func testPickableUsersCarryRole() throws {
     let users = try decode(ListResponse<PickableUser>.self, Fixtures.users).data
-    XCTAssertEqual(users.map(\.name), ["Alice Johnson", "Gita Guest"])
+    XCTAssertEqual(users.map(\.user.name), ["Alice Johnson", "Gita Guest"])
     XCTAssertEqual(users.map(\.isGuest), [false, true])
   }
 

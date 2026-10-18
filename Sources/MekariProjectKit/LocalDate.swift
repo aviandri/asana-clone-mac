@@ -63,11 +63,12 @@ public struct LocalDate: Sendable, Hashable, Comparable, CustomStringConvertible
 
   // MARK: - UTC helpers
 
-  private static let gregorianUTC: Calendar = {
+  // Computed: a stored static Calendar isn't Sendable on Swift 5.10's Linux Foundation.
+  private static var gregorianUTC: Calendar {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "UTC")!
     return calendar
-  }()
+  }
 
   private var utcDate: Date? {
     LocalDate.gregorianUTC.date(from: DateComponents(year: year, month: month, day: day, hour: 12))

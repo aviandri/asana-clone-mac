@@ -1,4 +1,10 @@
+// Swift 5.10's Linux Foundation doesn't mark URL, URLRequest, HTTPURLResponse & co. Sendable yet
+// (Darwin's and Swift 6's do), so take its types as pre-concurrency there.
+#if canImport(FoundationNetworking) && compiler(<6.0)
+@preconcurrency import Foundation
+#else
 import Foundation
+#endif
 import MekariProjectKit
 import XCTest
 @testable import MekariProjectFeatures
@@ -91,11 +97,11 @@ func settle(_ rounds: Int = 50) async {
 /// A fixed "today" for bucket tests: 2026-10-18 at noon, Jakarta.
 enum TestTime {
   static let today = LocalDate(year: 2026, month: 10, day: 18)
-  static let calendar: Calendar = {
+  static var calendar: Calendar {
     var c = Calendar(identifier: .gregorian)
     c.timeZone = TimeZone(identifier: "Asia/Jakarta")!
     return c
-  }()
+  }
   static let now: Date = today.date(in: calendar).addingTimeInterval(12 * 3600)
 }
 
