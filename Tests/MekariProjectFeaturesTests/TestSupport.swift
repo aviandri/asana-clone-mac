@@ -123,6 +123,15 @@ func signedInSession(_ fake: FakeMekariAPI, clock: TestClock = TestClock()) asyn
   return session
 }
 
+/// Stops the scope's inbox poller and lets its in-flight poll finish. Tests that pull access away
+/// call this first: otherwise the poller's first poll can land after the change, 404, and queue a
+/// recovery of its own.
+@MainActor
+func stopPolling(_ session: AppSession) async {
+  session.scope?.poller.stop()
+  await settle()
+}
+
 /// Yields until `condition` holds (bounded; fails the test instead of hanging).
 @MainActor
 func waitUntil(_ what: String = "condition", file: StaticString = #filePath, line: UInt = #line,

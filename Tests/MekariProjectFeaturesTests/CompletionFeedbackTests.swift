@@ -234,6 +234,92 @@ final class CompletionFeedbackTests: XCTestCase {
   }
 
   @MainActor
+  func testASiblingThatFailsAndReopensCancelsTheCelebration() async throws {
+    let (scope, _, fake, _) = try await makeScope()
+    let board = scope.project(DemoIDs.boardProject)
+    let ids = openIDs(board, section: 1)
+    for id in ids.dropLast(2) { await board.toggleComplete(id) }
+    let (a, b) = (ids[ids.count - 2], ids[ids.count - 1])
+
+    // A then B before either answers: B looks like the last one when clicked.
+    await fake.hold(.updateTask)
+    await fake.failNext(.updateTask, with: APIError(code: .internal, status: 500, message: "boom"))
+    async let completeA: Void = board.toggleComplete(a)
+    await waitUntil { await fake.parkedCount(.updateTask) == 1 }
+    async let completeB: Void = board.toggleComplete(b)
+    await waitUntil { await fake.parkedCount(.updateTask) == 2 }
+    await fake.release(.updateTask) // A fails and reopens
+    _ = await completeA
+    await fake.release(.updateTask, all: true)
+    _ = await completeB
+    XCTAssertEqual(scope.tasks[a]?.completed, false)
+    XCTAssertEqual(scope.tasks[b]?.completed, true)
+    XCTAssertNil(scope.completionFeedback.lastEvent, "the section isn't cleared")
+  }
+
+  @MainActor
+  func testANewTaskFromARefreshCancelsTheCelebration() async throws {
+    let (scope, _, fake, _) = try await makeScope()
+    let board = scope.project(DemoIDs.boardProject)
+    let section = board.sections[1].id
+    let ids = openIDs(board, section: 1)
+    for id in ids.dropLast() { await board.toggleComplete(id) }
+
+    await fake.hold(.updateTask)
+    async let complete: Void = board.toggleComplete(ids.last!)
+    await waitUntil { await fake.parkedCount(.updateTask) == 1 }
+    // A teammate adds a task to the section; a refresh brings it in before the PATCH answers.
+    _ = try await fake.createTask(NewTask(title: "Teammate's new task", projectId: DemoIDs.boardProject, sectionId: section))
+    await board.load()
+    await fake.release(.updateTask, all: true)
+    _ = await complete
+    XCTAssertEqual(scope.tasks[ids.last!]?.completed, true)
+    XCTAssertNil(scope.completionFeedback.lastEvent)
+  }
+
+  @MainActor
+  func testAnOpenSubtaskDueTodayDoesntHoldBackDueTodayCleared() async throws {
+    let (scope, _, fake, _) = try await makeScope(board: false)
+    _ = try await fake.createTask(NewTask(title: "Subtask due today", parentId: DemoIDs.taskWithStories,
+                                          assigneeId: DemoIDs.alice, dueDate: TestTime.today))
+    await scope.myTasks.refresh()
+    let today = todayIDs(scope)
+    let subtask = try taskID("Subtask due today", scope, in: today)
+    for title in ["Prepare 1:1 notes", "Push notification settings"] {
+      await scope.myTasks.toggleComplete(try taskID(title, scope, in: today))
+    }
+    XCTAssertEqual(scope.tasks[subtask]?.completed, false)
+    XCTAssertEqual(scope.completionFeedback.lastEvent?.celebration, .dueTodayCleared)
+  }
+
+  @MainActor
+  func testTheRateLimitSurvivesAWorkspaceSwitch() async throws {
+    let fake = demoFake()
+    let clock = TestClock()
+    let session = await signedInSession(fake, clock: clock)
+    let first = try XCTUnwrap(session.scope)
+    let board = first.project(DemoIDs.boardProject)
+    await board.load()
+    for id in openIDs(board, section: 1) { await board.toggleComplete(id) }
+    XCTAssertEqual(first.completionFeedback.lastEvent?.id, 1)
+
+    await session.switchWorkspace(to: DemoIDs.acmePilot)
+    await session.switchWorkspace(to: DemoIDs.mekari)
+    let second = try XCTUnwrap(session.scope)
+    XCTAssertFalse(first === second)
+    let again = second.project(DemoIDs.boardProject)
+    await again.load()
+    let todo = openIDs(again, section: 0)
+    for id in todo { await again.toggleComplete(id) }
+    XCTAssertNil(second.completionFeedback.lastEvent, "still inside the window from before the switch")
+
+    await clock.advance(by: .seconds(30))
+    await again.toggleComplete(todo.last!)
+    await again.toggleComplete(todo.last!)
+    XCTAssertNotNil(second.completionFeedback.lastEvent)
+  }
+
+  @MainActor
   func testSubtasksNeverCelebrate() async throws {
     let (scope, _, _, _) = try await makeScope()
     let detail = scope.taskDetail(DemoIDs.taskWithStories)

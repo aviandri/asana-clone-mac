@@ -126,6 +126,8 @@ public final class AppSession {
   @ObservationIgnored private var eventLoop: Task<Void, Never>?
   @ObservationIgnored private var switchRequest = 0
   @ObservationIgnored private var switchQueue: Task<Void, Never>?
+  /// The celebration rate limit, kept across workspace switches.
+  @ObservationIgnored private let celebrationCooldown = CelebrationCooldown()
   /// Jobs queued and not finished, and jobs skipped as superseded (tests pin the queue with these).
   @ObservationIgnored private(set) var queuedJobs = 0 {
     didSet { if isSwitching != (queuedJobs > 0) { isSwitching = queuedJobs > 0 } }
@@ -363,6 +365,7 @@ public final class AppSession {
     scope = me.currentWorkspace.map {
       WorkspaceScope(api: api, workspace: $0, me: me.user.summary, clock: clock, calendar: calendar, now: now)
     }
+    scope?.completionFeedback.cooldown = celebrationCooldown
     generation += 1
     scope?.poller.start()
   }

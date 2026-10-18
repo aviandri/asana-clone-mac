@@ -650,12 +650,14 @@ public func submit() async                           // personal task assigned t
      failed completion ends the linger at once; an older timer or failure never ends a newer linger.
    - `scope.completionFeedback` (`CompletionFeedback`) publishes `lastEvent` (`Event { id, taskID,
      celebration }`, where `id` increments per event). The decision is made against the cache at the
-     optimistic apply and published only once the server confirms. An un-complete, a rejected
-     completion, or one un-completed before the server answered never celebrates.
+     optimistic apply, judged again once the server confirms, and published only if it still holds.
+     An un-complete, a rejected completion, one un-completed before the server answered, or one whose
+     "last" stopped being true meanwhile (a sibling's failed completion reopened it, a refresh brought
+     in a new task) never celebrates.
    - Celebrations, highest first: `projectCleared` (last open top-level task in the project, anyone's),
      `sectionCleared` (last open top-level task in its section), `dueTodayCleared` (my last open task
-     due today; overdue doesn't count). Subtasks never celebrate. The project and section rules need
+     due today; overdue doesn't count). Subtasks never celebrate, and don't hold back "due today". The project and section rules need
      that project's `ProjectStore` loaded; the due-today rule needs My Tasks loaded.
-   - At most one event per 30 s, on the scope clock. `celebrationsEnabled` is persisted in UserDefaults
+   - At most one event per 30 s, on the session clock; the window survives workspace switches. `celebrationsEnabled` is persisted in UserDefaults
      under `CompletionFeedback.celebrationsEnabledKey` and is on when unset; while it's off, no event
      fires and no 30 s window starts.
