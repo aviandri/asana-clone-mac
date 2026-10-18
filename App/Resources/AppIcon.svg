@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Mekari Project app icon: the web favicon (asana-clone-fe public/favicon.svg) placed on the
+       macOS icon grid (824x824 tile at 100,100 on a 1024 canvas, with the standard soft shadow). -->
+  <defs>
+    <linearGradient id="mp-bg" x1="16.239" y1="23.648" x2="8.367" y2="2.018" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B0136B"/>
+      <stop offset=".5" stop-color="#E0257F"/>
+      <stop offset="1" stop-color="#FF5FA2"/>
+    </linearGradient>
+    <linearGradient id="mp-glyph" x1="12" y1="19" x2="12" y2="5" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFD1E6"/>
+      <stop offset=".7" stop-color="#F7F7F7"/>
+    </linearGradient>
+    <filter id="mp-shadow" x="-30%" y="-30%" width="160%" height="180%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy=".7" stdDeviation=".7" flood-color="#6E0A40" flood-opacity=".35"/>
+    </filter>
+    <filter id="tile-shadow" x="-10%" y="-10%" width="120%" height="125%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy=".29" stdDeviation=".35" flood-color="#000000" flood-opacity=".28"/>
+    </filter>
+  </defs>
+  <g transform="translate(100 100) scale(34.3333)">
+    <rect width="24" height="24" rx="5.4" fill="url(#mp-bg)" filter="url(#tile-shadow)"/>
+    <g filter="url(#mp-shadow)">
+      <rect x="5" y="5.6" width="11" height="2.8" rx="1.4" fill="url(#mp-glyph)"/>
+      <rect x="5" y="10.6" width="7.4" height="2.8" rx="1.4" fill="url(#mp-glyph)"/>
+      <rect x="5" y="15.6" width="4.2" height="2.8" rx="1.4" fill="url(#mp-glyph)"/>
+      <path d="M12 16.4l2.2 2.2 4.6-5.1" fill="none" stroke="url(#mp-glyph)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+</svg>

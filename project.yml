@@ -1,0 +1,76 @@
+# XcodeGen spec: `xcodegen generate` → MekariProject.xcodeproj (generated, not committed).
+name: MekariProject
+options:
+  bundleIdPrefix: com.mekari
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Unsigned v1 (SPEC-MAC §2): ad-hoc signature only, no team.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+packages:
+  MekariProject:
+    path: .
+targets:
+  MekariProjectApp:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes:
+          - Resources/AppIcon.svg
+    dependencies:
+      - package: MekariProject
+        product: MekariProjectKit
+      - package: MekariProject
+        product: MekariProjectFeatures
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Mekari Project
+        CFBundleName: Mekari Project
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.productivity
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSUIElement: false
+        NSHumanReadableCopyright: © Mekari
+        CFBundleURLTypes:
+          - CFBundleURLName: com.mekari.project
+            CFBundleURLSchemes:
+              - mekariproject
+    settings:
+      base:
+        PRODUCT_NAME: Mekari Project
+        PRODUCT_MODULE_NAME: MekariProjectApp
+        PRODUCT_BUNDLE_IDENTIFIER: com.mekari.project
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ENABLE_PREVIEWS: YES
+  MekariProjectAppTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - AppTests
+    dependencies:
+      - target: MekariProjectApp
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.mekari.project.tests
+schemes:
+  MekariProjectApp:
+    build:
+      targets:
+        MekariProjectApp: all
+    test:
+      targets:
+        - MekariProjectAppTests
+    archive:
+      config: Release
