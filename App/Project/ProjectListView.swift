@@ -22,8 +22,6 @@ struct ProjectListView: View {
             }
         }
         .listStyle(.inset)
-        // A completed row lingers ~700 ms (TaskCache), then collapses out smoothly.
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: scope.tasks.lingering)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
                 Button("Open in New Window") { openTaskWindow(id) }
@@ -63,10 +61,13 @@ struct ProjectListView: View {
                     .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: id)
                 }
             }
+            // Scoped to the task rows, not the List (see MyTasksView): the add row below stays out of it.
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: scope.tasks.lingering)
             if store.canEdit {
                 AddTaskRow { title in
                     Task { await store.addTask(title: title, section: sectionID) }
                 }
+                .id("addTask.\(sectionID ?? "none")") // stable across row changes
                 .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: nil)
             }
         } header: {

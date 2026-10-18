@@ -18,6 +18,7 @@ struct MyTasksView: View {
                 AddTaskRow { title in
                     Task { await store.addTask(title: title) }
                 }
+                .id("addTask.myTasks") // stable: never re-created by task row changes
             }
 
             ForEach(store.groups) { group in
@@ -30,12 +31,13 @@ struct MyTasksView: View {
                             .tag(id)
                         }
                     }
+                    // Scoped to the task rows (not the List, so the add row and other reloads aren't
+                    // swept into the transaction): a completed row lingers ~700 ms, then collapses.
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: scope.tasks.lingering)
                 }
             }
         }
         .listStyle(.inset)
-        // A completed row lingers ~700 ms (TaskCache), then collapses out smoothly.
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: scope.tasks.lingering)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
                 Button("Open in New Window") { openTaskWindow(id) }
