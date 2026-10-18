@@ -18,10 +18,11 @@ public final class TaskCache {
   /// What views read: confirmed + pending edits.
   private var tasks: [String: TaskItem] = [:]
   private var details: [String: TaskDetail] = [:]
-  /// Completed in this session less than `lingerDuration` ago (`.zero`: no linger); lists still show
-  /// them in place.
+  /// Completed in this session less than `lingerDuration` ago; lists still show them in place.
   public private(set) var lingering: Set<String> = []
-  public let lingerDuration: Duration
+  /// How long a completed task lingers (`.zero`: not at all). Read when each linger starts, so a change
+  /// applies from the next completion.
+  @ObservationIgnored public var lingerDuration: Duration
 
   @ObservationIgnored private let api: any MekariAPI
   @ObservationIgnored private var confirmed: [String: TaskItem] = [:]
@@ -43,7 +44,7 @@ public final class TaskCache {
     let assignee: UserSummary??
   }
 
-  public init(api: any MekariAPI, clock: any Clock<Duration> = ContinuousClock(), lingerDuration: Duration = .milliseconds(700)) {
+  public init(api: any MekariAPI, clock: any Clock<Duration> = ContinuousClock(), lingerDuration: Duration = .milliseconds(300)) {
     self.api = api
     self.clock = clock
     self.lingerDuration = lingerDuration

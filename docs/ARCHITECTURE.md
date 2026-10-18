@@ -646,8 +646,8 @@ public func submit() async                           // personal task assigned t
    - My Tasks, Project and Inbox loads all use "apply unless something newer already landed".
 
 9. **Completion feedback (0.1.1, agreed with the UI side):**
-   - `TaskCache` keeps a just-completed task in `lingering` for `lingerDuration` (700 ms, on the scope
-     clock; `.zero` turns it off), with `isLingering(_:)`. My Tasks shows it in its old bucket (unless
+   - `TaskCache` keeps a just-completed task in `lingering` for `lingerDuration` (300 ms, on the scope
+     clock; settable, read when each linger starts; `.zero` turns it off), with `isLingering(_:)`. My Tasks shows it in its old bucket (unless
      completed tasks are shown), and project lists and the board keep it in place. An un-complete or a
      failed completion ends the linger at once; an older timer or failure never ends a newer linger.
    - `scope.completionFeedback` (`CompletionFeedback`) publishes `lastEvent` (`Event { id, taskID,
