@@ -130,7 +130,9 @@ public final class KeychainTokenStore: TokenStore, @unchecked Sendable {
 
   public init(account: String) {
     store = CachedTokenStore(backend: KeychainSecretBackend(account: account)) { message in
-      keychainLog.error("\(message, privacy: .public)")
+      // Made per call: `Logger` isn't Sendable in the macOS 14 SDK (Xcode 15.4), so a shared one
+      // can't be a global or be captured here. Only Keychain failures get here, so it's cheap.
+      Logger(subsystem: "com.mekari.project", category: "keychain").error("\(message, privacy: .public)")
     }
   }
 
@@ -139,7 +141,6 @@ public final class KeychainTokenStore: TokenStore, @unchecked Sendable {
   public func clear() { store.clear() }
 }
 
-private let keychainLog = Logger(subsystem: "com.mekari.project", category: "keychain")
 #endif
 
 /// The one server this install talks to (SPEC-MAC §4).
