@@ -216,11 +216,17 @@ jobs:
           xbuild=$(/usr/libexec/PlistBuddy -c 'Print :DTXcodeBuild' "$PLIST")
           echo "DTXcode=$xcode ($xbuild) DTSDKName=$sdk" | tee build/BUILD-INFO.txt
       - name: No fake path in the shipped app
-        # The Release archive must not contain the fake-API boot path (it's compiled only for Debug/UITest).
+        # The Release archive must not contain the fake-API boot path (compiled only for Debug/UITest).
+        # Scans all bytes for both flags (a short literal can sit inline in __TEXT,__text, which `strings`
+        # skips by default), and first requires a hit in this job's UITest build, so a blind check fails.
         run: |
+          has_flag() { grep -a -q -e '-UITestFakeAPI' -e '-UITestSignedOut' "$1" || strings -a "$1" | grep -q -e '-UITestFakeAPI' -e '-UITestSignedOut'; }
+          UIT_DIR=$(xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration UITest -showBuildSettings 2>/dev/null | awk -F' = ' '/^ *BUILT_PRODUCTS_DIR /{print $2; exit}')
+          CONTROL="$UIT_DIR/Mekari Project.app/Contents/MacOS/Mekari Project"
+          has_flag "$CONTROL" || { echo "check is blind: the UITest build should contain the flags"; exit 1; }
           BIN="build/MekariProject.xcarchive/Products/Applications/Mekari Project.app/Contents/MacOS/Mekari Project"
-          if strings "$BIN" | grep -q -- '-UITestFakeAPI'; then echo "Release binary contains the fake-API flag"; exit 1; fi
-          echo "no fake-API path in the Release binary"
+          if has_flag "$BIN"; then echo "Release binary contains the fake-API flags"; exit 1; fi
+          echo "fake-API flags: present in the UITest build, absent from the Release archive"
       - name: Launch smoke (Release app)
         # Start the shipped (archived) app for 5 s, signed out with no server, and fail if it exits or leaves
         # a crash report. The fake-API launch is covered by the UITest-configuration UI tests above.
