@@ -101,8 +101,8 @@ public struct LocalDate: Codable, Sendable, Hashable, Comparable, CustomStringCo
 }
 ```
 
-Timestamps decode from ISO-8601 with or without fractional seconds (`MekariJSON.decoder`);
-`MekariJSON.encoder` writes fractional seconds.
+Timestamps decode from ISO-8601 with or without fractional seconds (`MekariJSON.makeDecoder()`);
+`MekariJSON.makeEncoder()` writes fractional seconds.
 
 ### Writes
 
@@ -161,7 +161,7 @@ public protocol MekariAPI: AnyObject, Sendable {
   var events: AsyncStream<APIEvent> { get }            // single consumer: AppSession
 
   // Health & auth
-  func health(baseURL: URL) async throws               // GET /health (no auth); validates a server URL
+  func health() async throws                           // GET /health at the server root (no auth); validates a server URL
   func login(email: String, password: String) async throws -> Me   // stores the sid token
   func logout() async                                  // POST /auth/logout, best effort; always clears the token
   func me() async throws -> Me                         // GET /auth/me, sent WITHOUT the workspace header
@@ -226,6 +226,8 @@ public struct URLSessionTransport: HTTPTransport {      // ephemeral URLSession:
   which tolerates several cookies, folded headers, and attributes in any order). It saves the token in the `TokenStore`.
   Every request then sends `Cookie: sid=<token>`. A 401 from any call except `login` clears the token and
   emits `.unauthorized`.
+- `FakeMekariAPI.health()` accepts any server URL. `login` works for every seeded user with
+  `password123`; `signedInAs: nil` starts signed out.
 - **Workspace header.** `setWorkspace(id)` sets the header for later requests. It's not sent for
   `/auth/*`, `/health`, `/workspaces*`. A 404 on a *scoped collection* path (the same list as the web FE:
   `/users`, `/projects`, `/me/tasks`, `/tasks` (POST), `/notifications`, `/notifications/read-all`,
@@ -263,6 +265,18 @@ public actor FakeMekariAPI: MekariAPI {
   public func addNotification(_ n: InboxNotification)                // drive the poller
 }
 public struct FakeSeed: Sendable { public static let demo: FakeSeed; public static let empty: FakeSeed }
+
+/// Stable ids in `FakeSeed.demo`, for previews and the XCUITest smoke.
+public enum DemoIDs {
+  public static let mekari: String                 // workspace "Mekari" (organization)
+  public static let acmePilot: String              // workspace "Acme Pilot"
+  public static let boardProject: String           // ≥ 3 sections, tasks in each (alice is EDITOR)
+  public static let readOnlyProject: String        // alice is COMMENTER
+  public static let taskWithStories: String        // comment with a mention, subtasks, followers
+  public static let alice, bob, admin, guest: String   // user ids
+  public static let guestEmail = "guest@partner.test"
+  public static let password = "password123"
+}
 ```
 
 `FakeSeed.demo` mirrors the BE seed: workspaces **Mekari** (organization, example.com; admin, alice,
@@ -280,11 +294,11 @@ public enum Mentions {                                // "@[Name](userId)" in co
   public static func parse(_ body: String) -> [Segment]
   public static func token(for user: UserSummary) -> String          // "@[Alice Johnson](id)"
 }
-public enum WebLinks {                                // SPEC-MAC §5 "Open in Browser"
-  public static func project(_ id: String, server: URL) -> URL      // /projects/:id
-  public static func task(_ task: TaskItem, server: URL) -> URL     // /projects/:pid?task=:id or /my-tasks?task=:id
-  public static func workspaceSettings(server: URL) -> URL          // /workspace/settings
-  public static func acceptInvite(server: URL) -> URL               // /login (invite flow stays on the web)
+public enum WebLinks {                                // SPEC-MAC §5 "Open in Browser"; every link carries ?workspace=<id>
+  public static func project(_ id: String, server: URL, workspace: String) -> URL     // /projects/:id
+  public static func task(_ task: TaskItem, server: URL, workspace: String) -> URL    // /projects/:pid?task=:id or /my-tasks?task=:id
+  public static func workspaceSettings(server: URL, workspace: String) -> URL         // /workspace/settings
+  public static func acceptInvite(server: URL) -> URL                                 // /login (invite flow stays on the web)
 }
 public enum DeepLink: Equatable, Sendable {           // mekariproject://task/<id>, mekariproject://project/<id>
   case task(id: String), project(id: String)
@@ -343,11 +357,14 @@ public enum NavigationTarget: Hashable, Sendable { case task(id: String, project
   public init(settings: ServerSettings, tokens: TokenStore, apiFactory: @escaping @Sendable (URL, TokenStore) -> any MekariAPI,
               clock: any Clock<Duration> = ContinuousClock(), calendar: Calendar = .current)
   public static func preview(signedIn: Bool = true, as email: String = "alice@example.com") -> AppSession
+  /// `-UITestFakeAPI` boot: FakeMekariAPI, in-memory server ("https://demo.invalid") and token stores.
+  /// signedIn: false → start() ends in .signedOut and the smoke test drives sign-in (any URL, password123).
+  public static func uiTest(signedIn: Bool) -> AppSession
 
   public func start() async                           // token + /auth/me → .signedIn, else .signedOut
   public func signIn(server: String, email: String, password: String) async   // normalize → /health → login
   public func signOut() async
-  public func webURL(path: String) -> URL?            // server + path, for Open in Browser / settings
+  public func webURL(path: String) -> URL?            // server + path + ?workspace=<current>, for Open in Browser / settings
   public func resolve(_ link: DeepLink) async -> DeepLinkResult   // auto-switches workspace like the web FE
   public func dismissNotice()
 }
@@ -444,11 +461,13 @@ public func load() async
 public func addTask(title: String, section sectionID: String?) async
 public func addSection(name: String) async
 public func renameSection(_ id: String, to name: String) async
-/// List reorder and Board column moves. `index` is in the destination list WITHOUT the moved task.
-/// Features computes the float position from the neighbours (Reorder) and, if the gap is too small,
-/// renumbers that section (one PATCH per task) first.
-public func move(taskID: String, toSection sectionID: String?, index: Int) async
-public func moveSection(_ id: String, to index: Int) async
+/// List reorder and Board column moves, anchored: insert before `beforeTaskID`, or at the end of the
+/// section when nil. (`.onMove(IndexSet, Int)` → before = ids[dest] or nil; a row drop target = before
+/// that row; a column/empty-area drop = nil.) Features computes the float position from the neighbours
+/// (Reorder) and, if the gap is too small, first renumbers that section (one PATCH per task).
+/// before == taskID, or a move that leaves the order unchanged, is a no-op (no PATCH).
+public func move(taskID: String, toSection sectionID: String?, before beforeTaskID: String?) async
+public func moveSection(_ id: String, before beforeSectionID: String?) async
 public func toggleComplete(_ id: String) async
 public func clearError()
 ```
@@ -535,7 +554,7 @@ public var query: String                             // min 2 chars, debounce 25
 public private(set) var results: SearchResults?      // tasks / projects / people groups
 public private(set) var isSearching: Bool
 public var isEmpty: Bool { get }                     // "No results"
-public func target(forTask id: String) -> NavigationTarget
+public func target(forTask id: String) -> NavigationTarget   // projects: .project(id); people: the app opens mailto: (SPEC-MAC §5)
 ```
 
 ### QuickAddModel (menu bar)
@@ -560,8 +579,8 @@ public func submit() async                           // personal task assigned t
 
 ## 6. Decisions
 
-1. **One current workspace per app**, shared by all windows and the menu bar. SPEC-MAC §4 says "the
-   window's current workspace"; with one main window in v1 the two are the same. Per-window workspaces
+1. **One current workspace per app**, shared by all windows and the menu bar (confirmed by the UI engineer;
+   SPEC-MAC §4 says so). Per-window workspaces
    later would mean one `WorkspaceScope` per window. The API layer already allows it, because
    `setWorkspace` is per client.
 2. Views use `task.id` for `accessibilityIdentifier("task.row.<id>")`. Drag payloads are task-id strings
@@ -569,4 +588,8 @@ public func submit() async                           // personal task assigned t
 3. Debounces and polling run in Features with an injected `Clock`. Views run no timers.
 4. Agreed with the Mac UI engineer (asana-clone-b6), 2026-10-18: shared `TaskCache`, `phase`/`lastError`,
    `generation`, typed `SignInError`, a composer keyed on the trailing `@word`, `NavigationTarget`, and app
-   settings kept in `@AppStorage`.
+   settings kept in `@AppStorage`. Then: anchor-based `move(…before:)`, `DemoIDs`, `AppSession.uiTest`, and
+   people search results open `mailto:` in the app. The signatures are frozen from here; change them only by PR,
+   and tell the other side.
+5. `TaskCache` is one observed dictionary, so any task edit re-renders the visible rows. That's fine at v1
+   sizes; if profiling says otherwise, switch to per-task observable boxes behind the same subscript.
