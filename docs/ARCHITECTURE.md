@@ -68,7 +68,8 @@ public struct TaskDetail   { task: TaskItem; followers: [UserSummary]; subtasks:
 public struct TaskParentRef{ id, title: String }
 
 public enum Story: Identifiable { case comment(Comment), activity(Activity) }   // discriminated by "kind"
-public struct Comment      { id: String; author: UserSummary; body: String; createdAt: Date; editedAt: Date? }
+public struct Comment      { id: String; author: UserSummary; body: String; createdAt: Date; editedAt: Date?
+                             var segments: [Mentions.Segment] }   // parsed body
 public struct Activity     { id: String; actor: UserSummary; type: ActivityType; data: JSONValue; createdAt: Date }
 public enum JSONValue      { case null, bool(Bool), number(Double), string(String), array([JSONValue]), object([String: JSONValue]) }
 
@@ -299,182 +300,209 @@ public enum Reorder {                                 // BE §2 float positions
 
 ## 4. Features: stores and view models
 
-Everything is `@MainActor @Observable public final class`. Each store is built with a `MekariAPI`,
-plus a `Clock` and `Calendar` where time matters, so tests and previews can inject them. Async
-methods never throw to the view: they set a published `error: APIError?` (or `errorMessage`), and
-loading states use `LoadState`.
+Every store is `@MainActor @Observable public final class`, built synchronously with
+`init(api: any MekariAPI, …)` and no network work in `init` (previews). Time-dependent stores also
+take `clock: any Clock<Duration>` and `calendar: Calendar` (time zone included) for deterministic
+tests. Each has a `static func preview(…)` backed by `FakeMekariAPI`.
+
+**Conventions (all stores)**
+- Async actions return nothing (except where noted) and set state; they never throw to the view.
+- `phase: LoadState` for loading; `lastError: APIError?` is transient, shown by the view and then
+  cleared with `clearError()`.
+- Optimistic edits go through the shared `TaskCache`, once. On failure it reverts and sets `lastError`
+  on the calling store.
 
 ```swift
 public enum LoadState: Equatable { case idle, loading, loaded, failed(APIError) }
+public enum NavigationTarget: Hashable, Sendable { case task(id: String, projectID: String?), project(id: String) }
 ```
 
 ### AppSession (root, one per app)
 
 ```swift
 @MainActor @Observable public final class AppSession {
-  public enum Phase: Equatable { case launching, signedOut, signedIn }
-  public private(set) var phase: Phase
-  public private(set) var me: Me?
-  public private(set) var workspace: WorkspaceScope?      // nil = signed out, or signed in with no workspace
-  public var workspaces: [Workspace] { get }              // Me.workspaces order (by name), for ⌘1…⌘9
-  public private(set) var notice: String?                 // toasts, e.g. "Switched to Acme Pilot"
+  public enum State: Equatable { case restoring, signedOut, signedIn(Me) }
+  public enum SignInError: Equatable { case wrongCredentials, rateLimited, badServer, transport, other(String) }
+
+  public private(set) var state: State
+  public private(set) var isSigningIn: Bool
+  public private(set) var signInError: SignInError?   // 401 / 429 / bad URL or /health / offline / BE message
+  public private(set) var scope: WorkspaceScope?      // the current workspace's stores; nil = signed out or no workspace
+  public private(set) var generation: Int             // bumps when a switch commits or lost access resets → `.task(id: generation)`
+  public private(set) var notice: String?             // e.g. "Switched to Acme Pilot", "You no longer have access to X"
   public let settings: ServerSettings
 
-  public init(apiFactory: @escaping (URL) -> MekariAPI, settings: ServerSettings, clock: any Clock<Duration> = ContinuousClock())
-  public static func preview(signedIn: Bool = true) -> AppSession     // FakeMekariAPI, demo seed
+  // Workspaces
+  public var current: Workspace? { get }
+  public var all: [Workspace] { get }                 // Me.workspaces order, for ⌘1…⌘9
+  public var isGuest: Bool { get }
+  public var isAdmin: Bool { get }
+  public func switchWorkspace(to id: String) async    // serialized; newest wins; header + scope change together
+  public func switchWorkspace(index: Int) async       // ⌘1…⌘9 (0-based); ignored if out of range
 
-  public func start() async                          // restores the session (token + /auth/me) or → .signedOut
-  public func makeSignIn() -> SignInModel
+  public init(settings: ServerSettings, tokens: TokenStore, apiFactory: @escaping @Sendable (URL, TokenStore) -> any MekariAPI,
+              clock: any Clock<Duration> = ContinuousClock(), calendar: Calendar = .current)
+  public static func preview(signedIn: Bool = true, as email: String = "alice@example.com") -> AppSession
+
+  public func start() async                           // token + /auth/me → .signedIn, else .signedOut
+  public func signIn(server: String, email: String, password: String) async   // normalize → /health → login
   public func signOut() async
-  public func switchWorkspace(to id: String) async   // POST /switch, setWorkspace, new WorkspaceScope, notice
-  public func switchWorkspace(index: Int) async      // ⌘1…⌘9 (0-based); ignored if out of range
-  public func open(_ link: DeepLink) async -> DeepLinkResult   // auto-switches workspace like the web FE
+  public func webURL(path: String) -> URL?            // server + path, for Open in Browser / settings
+  public func resolve(_ link: DeepLink) async -> DeepLinkResult   // auto-switches workspace like the web FE
   public func dismissNotice()
 }
-public enum DeepLinkResult: Equatable { case task(String), project(String), noAccess }
+public enum DeepLinkResult: Equatable { case open(NavigationTarget), noAccess }
 ```
 
-- On a `.unauthorized` event → token cleared, `phase = .signedOut`, `workspace = nil`.
-- On `.workspaceLost` → `GET /auth/me` (no header), adopt its `currentWorkspace` (new
-  `WorkspaceScope`), notice "You no longer have access to <name>".
-- `me.currentWorkspace == nil` while signed in → `workspace == nil`. The app shows "No workspace,
-  open in browser" (the onboarding flows stay on the web in v1).
+- A `.unauthorized` event → `.signedOut`, `scope = nil`.
+- `.workspaceLost` → `GET /auth/me` without a header, adopt its `currentWorkspace` (new scope,
+  `generation += 1`), and post a notice.
+- Signed in with `currentWorkspace == nil` → `scope == nil`; the app shows "No workspace, open in browser".
+- Settings such as "show in menu bar" and "notifications on" stay in the app (`@AppStorage`).
+  The server URL lives in `ServerSettings`.
 
 ### WorkspaceScope (everything for the current workspace)
 
-A new instance on every switch. Views key on `scope.id`, so all state resets together.
-
 ```swift
 @MainActor @Observable public final class WorkspaceScope: Identifiable {
-  public let id: String
-  public let workspace: Workspace                       // name, color, myRole (Guest pill: workspace.isGuest)
+  public let id: String                                   // workspace id
+  public let workspace: Workspace
   public let me: UserSummary
+  public let tasks: TaskCache
   public let sidebar: SidebarStore
   public let myTasks: MyTasksStore
   public let inbox: InboxStore
   public let poller: NotificationPoller
   public let search: SearchStore
   public let quickAdd: QuickAddModel
-  public func project(_ id: String) -> ProjectStore            // cached per id
-  public func taskDetail(_ id: String) -> TaskDetailStore      // cached per id; ⌘O window reuses it
-  public func userPicker() -> UserPickerModel                  // new each time
-  public func refreshAll() async                                // window focus
+  public func project(_ id: String) -> ProjectStore        // cached per id
+  public func taskDetail(_ id: String) -> TaskDetailStore  // cached per id; the ⌘O window reuses it
+  public func userSearch() -> UserSearch                   // new instance each time
+  public func refresh() async                              // window focus: My Tasks + sidebar + inbox
 }
 ```
 
-### SignInModel
+### TaskCache (single source of truth for tasks)
 
 ```swift
-@MainActor @Observable public final class SignInModel {
-  public var server: String          // prefilled from settings
-  public var email: String
-  public var password: String
-  public private(set) var isSubmitting: Bool
-  public private(set) var errorMessage: String?   // "Wrong email or password" (401), "Too many attempts, try again in a minute" (429),
-                                                  // "Can't reach the server" (transport / bad /health), else the BE message
-  public var canSubmit: Bool
-  public func submit() async                      // normalize URL → /health → login → session.signedIn
+@MainActor @Observable public final class TaskCache {
+  public subscript(id: String) -> TaskItem? { get }       // rows read tasks by id
+  public func detail(_ id: String) -> TaskDetail?
+  public func upsert(_ tasks: [TaskItem])
+  public func upsert(_ detail: TaskDetail)
+  public func remove(_ id: String)
+  /// Applies `changes` locally at once, PATCHes, then stores the server's TaskDetail; reverts on error.
+  public func update(_ id: String, _ changes: TaskChanges) async throws   // always APIError
 }
 ```
+
+Stores hold **task ids**. My Tasks, Project and the inspector read the cache, so an edit anywhere
+shows up everywhere without events. (Lists still re-query membership on load, e.g. a task that is
+no longer assigned to me leaves My Tasks on the next refresh; the optimistic path also removes it
+at once.)
 
 ### SidebarStore
 
 ```swift
 public private(set) var projects: [Project]     // non-archived, by name (guests: only theirs, BE-filtered)
-public private(set) var state: LoadState
-public var unreadCount: Int { get }             // from InboxStore, for the badge
-public var canOpenSettingsInBrowser: Bool       // myRole == .admin
+public private(set) var phase: LoadState
+public private(set) var lastError: APIError?
 public func load() async
 ```
 
 ### MyTasksStore
 
 ```swift
-public enum DueBucket: String, CaseIterable { case overdue, today, upcoming, later, noDate, completed }  // upcoming = next 7 days
-public struct TaskGroup: Identifiable { public let bucket: DueBucket; public let title: String; public let tasks: [TaskItem] }
+public enum DueBucket: String, CaseIterable, Sendable { case overdue, today, upcoming, later, noDate, completed }
+// upcoming = due in 1…7 days; matches the web FE
+public struct TaskGroup: Identifiable, Equatable { public let bucket: DueBucket; public let title: String; public let taskIDs: [String] }
 
-public private(set) var tasks: [TaskItem]
-public var showCompleted: Bool                  // didSet → reload with completed tasks
-public private(set) var state: LoadState
-public var groups: [TaskGroup] { get }          // non-empty buckets, in order; sorted by due date then title
-public var dueTodayOrOverdue: [TaskItem] { get }// menu bar list
-public private(set) var error: APIError?
-public func load() async
-public func toggleComplete(_ task: TaskItem) async    // optimistic; reverts and sets error on failure
-public func addTask(title: String, dueDate: LocalDate?) async -> Bool   // personal task, assigned to me
-public func apply(_ updated: TaskItem)                // other stores push edits (inspector) here
+public var showCompleted: Bool                  // reloads incl. completed
+public private(set) var groups: [TaskGroup]     // non-empty buckets in order; by due date, then title
+public var dueSoon: [String] { get }            // overdue + today, for the menu bar
+public private(set) var phase: LoadState
+public private(set) var lastError: APIError?
+public func refresh() async                     // also on window focus
+public func toggleComplete(_ id: String) async  // optimistic via TaskCache
+public func addTask(title: String, dueDate: LocalDate? = nil) async   // personal, assigned to me
+public func clearError()
 ```
 
 ### ProjectStore
 
 ```swift
-public enum Mode { case list, board }                  // starts on defaultView; CALENDAR → list
-public struct SectionColumn: Identifiable { public let section: Section?; public let tasks: [TaskItem] }  // nil section = "No section"
-
-public let projectID: String
+public enum ViewMode: Sendable { case list, board }   // initial from defaultView; CALENDAR → list
 public private(set) var detail: ProjectDetail?
-public private(set) var columns: [SectionColumn]       // sections by position, tasks by position
-public var mode: Mode
+public private(set) var sections: [Section]          // by position
+public func taskIDs(in sectionID: String?) -> [String] // by position; nil = "No section" (only if it has tasks)
+public var viewMode: ViewMode
 public var showCompleted: Bool
-public private(set) var state: LoadState
-public private(set) var error: APIError?
-public var canEdit: Bool { get }                       // workspace admin, or myRole != .commenter (BE §4)
+public var canEdit: Bool { get }                     // workspace ADMIN, or myRole != .commenter (BE §4; W7 limits manage, not edit)
+public private(set) var phase: LoadState
+public private(set) var lastError: APIError?
 public func load() async
-public func addTask(title: String, in sectionID: String?) async -> Bool
-public func addSection(name: String) async -> Bool
+public func addTask(title: String, section sectionID: String?) async
+public func addSection(name: String) async
 public func renameSection(_ id: String, to name: String) async
-public func moveTask(_ taskID: String, toSection sectionID: String?, at index: Int) async   // optimistic + Reorder
-public func moveSection(_ sectionID: String, to index: Int) async
-public func toggleComplete(_ task: TaskItem) async
-public func apply(_ updated: TaskItem)
+/// List reorder and Board column moves. `index` is in the destination list WITHOUT the moved task.
+/// Features computes the float position from the neighbours (Reorder) and, if the gap is too small,
+/// renumbers that section (one PATCH per task) first.
+public func move(taskID: String, toSection sectionID: String?, index: Int) async
+public func moveSection(_ id: String, to index: Int) async
+public func toggleComplete(_ id: String) async
+public func clearError()
 ```
 
 ### TaskDetailStore (inspector)
 
 ```swift
 public let taskID: String
-public private(set) var detail: TaskDetail?
-public private(set) var stories: [Story]               // oldest first: comments + activity
-public private(set) var state: LoadState
-public private(set) var error: APIError?
+public var task: TaskDetail? { get }                 // from TaskCache
+public private(set) var stories: [Story]             // oldest first; Comment.segments is pre-parsed
 public var canEdit: Bool { get }
-public var composer: CommentComposer                    // see below
+public private(set) var phase: LoadState
+public private(set) var lastError: APIError?
+public let composer: CommentComposer
 
-public func load() async                                // task + stories in parallel
+public func load() async                             // task + stories in parallel
+// Final values only: the view keeps text fields in @State and commits on submit/blur. All optimistic.
 public func setTitle(_ title: String) async
 public func setDescription(_ text: String?) async
 public func setAssignee(_ user: UserSummary?) async
 public func setDueDate(_ date: LocalDate?) async
 public func setPriority(_ priority: Priority) async
-public func setCompleted(_ done: Bool) async
-public func addSubtask(title: String) async -> Bool
-public func toggleSubtask(_ subtask: TaskItem) async
+public func toggleComplete() async
+public func addSubtask(title: String) async
+public func toggleSubtask(_ id: String) async
+public func follow() async                           // me
+public func unfollow() async
 public func addFollower(_ user: UserSummary) async
 public func removeFollower(_ user: UserSummary) async
-public func sendComment() async -> Bool                // ⌘↩
 public func editComment(_ id: String, body: String) async
 public func deleteComment(_ id: String) async
+public func clearError()
 ```
-
-Every edit is optimistic and is pushed back to `MyTasksStore` / `ProjectStore` through
-`WorkspaceScope`, so lists stay in sync.
 
 ```swift
 @MainActor @Observable public final class CommentComposer {
-  public var text: String
-  public var cursor: Int                                  // UTF-16 offset, bound from the text view
-  public private(set) var mentionQuery: String?           // non-nil while typing "@que…" → show the picker
-  public let picker: UserPickerModel                      // driven by mentionQuery
-  public func insertMention(_ user: UserSummary)          // replaces "@que" with "@[Name](id) "
-  public var canSend: Bool
+  public var draft: String                           // storage form: mentions as "@[Name](id)"
+  public var mentionQuery: String? { get }           // the trailing "@word" of draft (no cursor API on macOS 14 TextEditor)
+  public let users: UserSearch                       // follows mentionQuery
+  public func insertMention(_ user: PickableUser)    // replaces the trailing "@word" with "@[Name](id) "
+  public var canSend: Bool { get }
+  public private(set) var isSending: Bool
+  public func send() async                           // ⌘↩; appends the comment to stories; clears draft
 }
 ```
 
-### UserPickerModel (assignee, followers, mentions)
+In Kit: `Comment.segments: [Mentions.Segment]` (`.text` / `.mention(name:userID:)`); markdown is
+rendered in the app.
+
+### UserSearch (assignee, followers, mentions)
 
 ```swift
-public var query: String                                  // debounced 250 ms → GET /users?q=
-public private(set) var results: [PickableUser]           // .isGuest → "Guest" badge (W8)
+public var query: String                             // debounced 250 ms → GET /users?q=
+public private(set) var results: [PickableUser]      // role → "Guest" badge (W8)
 public private(set) var isLoading: Bool
 ```
 
@@ -482,28 +510,32 @@ public private(set) var isLoading: Bool
 
 ```swift
 // InboxStore
-public private(set) var items: [InboxNotification]       // newest first
+public private(set) var notifications: [InboxNotification]   // newest first
 public private(set) var unreadCount: Int
-public private(set) var state: LoadState
+public private(set) var phase: LoadState
+public private(set) var lastError: APIError?
 public func load() async
-public func open(_ n: InboxNotification) async -> String? // marks read, returns the task id to open
+public func markRead(_ id: String) async
 public func markAllRead() async
+public func open(_ id: String) async -> NavigationTarget?    // marks read; .task(id, projectID)
 
 // NotificationPoller: drives InboxStore.load on a timer
-public enum Activity { case active, background }          // 60 s / 5 min (SPEC-MAC §4)
-public var activity: Activity
-public var onNew: (([InboxNotification]) -> Void)?        // new unread since the last poll → local banners (not on the first poll)
-public func start()                                       // idempotent
+public enum Mode: Sendable { case active, background }       // 60 s / 5 min (SPEC-MAC §4)
+public struct LocalNotice: Equatable, Sendable { public let id: String; public let title: String; public let taskID: String? }  // "Alice commented on Fix login"
+public func setMode(_ mode: Mode)
+public var onNew: (([LocalNotice]) -> Void)?                 // new unread since the last poll (never on the first poll)
+public func start()                                          // idempotent; the scope starts it
 public func stop()
 ```
 
 ### SearchStore (⌘K)
 
 ```swift
-public var query: String                                  // min 2 chars, debounce 250 ms
-public private(set) var results: SearchResults?
+public var query: String                             // min 2 chars, debounce 250 ms; stale responses dropped
+public private(set) var results: SearchResults?      // tasks / projects / people groups
 public private(set) var isSearching: Bool
-public var isEmpty: Bool { get }                          // for "No results"
+public var isEmpty: Bool { get }                     // "No results"
+public func target(forTask id: String) -> NavigationTarget
 ```
 
 ### QuickAddModel (menu bar)
@@ -512,8 +544,8 @@ public var isEmpty: Bool { get }                          // for "No results"
 public var title: String
 public var dueDate: LocalDate?
 public private(set) var isSubmitting: Bool
-public private(set) var errorMessage: String?
-public func submit() async -> Bool                       // personal task assigned to me; clears on success; updates MyTasksStore
+public private(set) var lastError: APIError?
+public func submit() async                           // personal task assigned to me; clears on success; My Tasks updates
 ```
 
 ## 5. Testing
@@ -526,10 +558,15 @@ public func submit() async -> Bool                       // personal task assign
   project tasks, create/patch/complete, comments, notifications, search, guest rules (W1, W7, W8).
   Locally they run against a throwaway BE DB, never the shared `asana` DB.
 
-## 6. Open points (agreed with the UI engineer before PR 3)
+## 6. Decisions
 
 1. **One current workspace per app**, shared by all windows and the menu bar. SPEC-MAC §4 says "the
-   window's current workspace". With one main window in v1 they're the same. A per-window workspace
-   would need one `WorkspaceScope` per window, and the API is already ready for that.
-2. Stores expose `TaskItem` arrays. Views use `task.id` for `accessibilityIdentifier("task.row.<id>")`.
-3. Debounces and polling use an injected `Clock`. Views don't run timers.
+   window's current workspace"; with one main window in v1 the two are the same. Per-window workspaces
+   later would mean one `WorkspaceScope` per window. The API layer already allows it, because
+   `setWorkspace` is per client.
+2. Views use `task.id` for `accessibilityIdentifier("task.row.<id>")`. Drag payloads are task-id strings
+   (UI side), so Features needs no `Transferable`.
+3. Debounces and polling run in Features with an injected `Clock`. Views run no timers.
+4. Agreed with the Mac UI engineer (asana-clone-b6), 2026-10-18: shared `TaskCache`, `phase`/`lastError`,
+   `generation`, typed `SignInError`, a composer keyed on the trailing `@word`, `NavigationTarget`, and app
+   settings kept in `@AppStorage`.
