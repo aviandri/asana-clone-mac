@@ -98,8 +98,10 @@ jobs:
         run: cat be.log || true
 
   macos-app:
-    # The app target only builds on macOS: XcodeGen → build + test (unsigned), then a universal
-    # Release archive, ad-hoc signed, launch-smoked and zipped (uploaded on main and tags).
+    # Newest toolchain (Xcode 16.4, macOS 15 SDK) as a forward-compat signal: package tests, then
+    # build + test (unsigned). Release artifacts come from macos-xcode15: v0.1.0 built here crashed
+    # on macOS 14 (SDK-15 AppKit field-editor behaviour). On main it also uploads a Debug build
+    # with get-task-allow, so QA can attach lldb on a device and investigate the SDK-15 path.
     runs-on: macos-15
     timeout-minutes: 30
     env:
@@ -115,6 +117,70 @@ jobs:
         run: |
           xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO build test
+      - name: Add-field UI tests against the Release build
+        # The add-field flows crashed in a Release build (v0.1.0), so they also run optimised here.
+        run: |
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES \
+            -only-testing:MekariProjectUITests/AppFlowUITests/testRapidInlineAddTaskInMyTasksAndAProject \
+            -only-testing:MekariProjectUITests/AppFlowUITests/testTypingInTheAddFieldWhileTheListUpdates \
+            -only-testing:MekariProjectUITests/AppFlowUITests/testUndoInTheInspectorTitleWorksAfterAnAdd \
+            build test
+      - name: Debug build for lldb (universal, ad-hoc signed, get-task-allow)
+        # One binary (no Xcode 16 debug dylib), so a plain ad-hoc signature with the entitlement works.
+        run: |
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Debug \
+            -destination 'generic/platform=macOS' -derivedDataPath build/debug \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO ENABLE_DEBUG_DYLIB=NO CODE_SIGNING_ALLOWED=NO build
+          APP="build/debug/Build/Products/Debug/Mekari Project.app"
+          /usr/libexec/PlistBuddy -c 'Add :com.apple.security.get-task-allow bool true' build/debug.entitlements
+          codesign --force --deep --sign - --entitlements build/debug.entitlements "$APP"
+          codesign -d --entitlements - "$APP" 2>/dev/null | grep -q get-task-allow
+          lipo -archs "$APP/Contents/MacOS/Mekari Project"
+          /usr/libexec/PlistBuddy -c 'Print :DTXcode' -c 'Print :DTSDKName' "$APP/Contents/Info.plist"
+          ditto -c -k --keepParent "$APP" "build/MekariProject-debug-xcode16-${GITHUB_SHA::7}.zip"
+      - name: Upload Debug build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MekariProject-debug-xcode16-${{ github.sha }}
+          path: build/MekariProject-debug-xcode16-*.zip
+          retention-days: 14
+
+  macos-xcode15:
+    # The release build. macOS 14 + Xcode 15.4 (Swift 5.10, macOS 14.5 SDK; deployment target 14.0,
+    # so it runs on 14 and 15): build + test (Debug), the UI tests again on Release, then a
+    # universal Release archive, ad-hoc signed, launch-smoked and zipped (uploaded on main and
+    # tags). Building against the 14 SDK is deliberate: see macos-app.
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      PROJECT: MekariProject.xcodeproj
+      SCHEME: MekariProjectApp
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - run: xcodebuild -version && swift --version
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Build and test the app
+        run: |
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO build test
+      - name: UI tests against the Release build
+        # Shipped builds are Release (optimized), and Debug/Release diverged once (v0.1.0). Runs the
+        # whole UI target; ENABLE_TESTABILITY only so the @testable hosted bundle still compiles.
+        run: |
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
+            -destination 'platform=macOS' -resultBundlePath build/ReleaseUITests.xcresult \
+            CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES -only-testing:MekariProjectUITests build test
+      - name: Upload Release UI test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-uitests-xcresult
+          path: build/ReleaseUITests.xcresult
+          retention-days: 14
       - name: Version
         id: version
         # Tags v1.2.3 / v1.2.3-rc1 stamp MARKETING_VERSION 1.2.3 and name the zip after the tag;
@@ -140,7 +206,14 @@ jobs:
           codesign --force --deep --sign - "$APP"
           codesign --verify --verbose=2 "$APP"
           lipo -archs "$APP/Contents/MacOS/Mekari Project" | tee /dev/stderr | grep -q 'x86_64 arm64\|arm64 x86_64'
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"
+          PLIST="$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :CFBundleVersion' "$PLIST"
+          # Ship only SDK-14 builds (a runner image change must not silently switch the SDK).
+          sdk=$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$PLIST")
+          [[ "$sdk" == macosx14.* ]] || { echo "release build uses SDK $sdk, expected macosx14.*"; exit 1; }
+          xcode=$(/usr/libexec/PlistBuddy -c 'Print :DTXcode' "$PLIST")
+          xbuild=$(/usr/libexec/PlistBuddy -c 'Print :DTXcodeBuild' "$PLIST")
+          echo "DTXcode=$xcode ($xbuild) DTSDKName=$sdk" | tee build/BUILD-INFO.txt
       - name: Launch smoke (Release app, fake API)
         # Start the archived app for 5 s with the fake API and fail if it exits or leaves a crash report.
         run: |
@@ -167,30 +240,52 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: MekariProject-${{ github.sha }}
-          path: build/MekariProject-*.zip
+          path: |
+            build/MekariProject-*.zip
+            build/BUILD-INFO.txt
           retention-days: 30
 
-  macos-xcode15:
-    # Oldest supported Mac toolchain: macOS 14 + Xcode 15.4 (Swift 5.10, macOS 14.5 SDK), so a
-    # developer Mac on Sonoma can build locally. Build + test only, no archive.
+  macos14-xcode16:
+    # The combination that crashed v0.1.0 on a device: an app linked against the macOS 15 SDK
+    # (newest Xcode 16.x on the macos-14 image) running on macOS 14. Release build, hosted tests
+    # + the add-field UI tests. A signal only: allowed to fail and not a release gate (releases
+    # ship the Xcode 15.4 build).
     runs-on: macos-14
     timeout-minutes: 30
+    continue-on-error: true
     env:
       PROJECT: MekariProject.xcodeproj
       SCHEME: MekariProjectApp
     steps:
       - uses: actions/checkout@v4
-      - run: sudo xcode-select -s /Applications/Xcode_15.4.app
-      - run: xcodebuild -version && swift --version
+      - name: Select the newest Xcode 16
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version && xcrun --show-sdk-version && sw_vers -productVersion
       - run: brew install xcodegen
       - run: xcodegen generate
-      - name: Build and test the app
+      - name: Release build, hosted tests and add-field UI tests
         run: |
-          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
-            CODE_SIGNING_ALLOWED=NO build test
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release -destination 'platform=macOS' \
+            -resultBundlePath build/macos14-xcode16.xcresult \
+            CODE_SIGNING_ALLOWED=NO ENABLE_TESTABILITY=YES \
+            -only-testing:MekariProjectAppTests \
+            -only-testing:MekariProjectUITests/AppFlowUITests/testRapidInlineAddTaskInMyTasksAndAProject \
+            -only-testing:MekariProjectUITests/AppFlowUITests/testTypingInTheAddFieldWhileTheListUpdates \
+            -only-testing:MekariProjectUITests/AppFlowUITests/testUndoInTheInspectorTitleWorksAfterAnAdd \
+            build test
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos14-xcode16-xcresult
+          path: build/macos14-xcode16.xcresult
+          retention-days: 14
 
   release:
-    # v* tags only: a GitHub Release with the universal zip and notes generated from merged PRs.
+    # v* tags only: a GitHub Release with macos-xcode15's universal zip and notes generated from
+    # merged PRs, prefixed with install steps and the toolchain that built it.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [linux-kit, linux-kit-swift510, linux-contract, macos-app, macos-xcode15]
     runs-on: ubuntu-latest
@@ -211,14 +306,16 @@ jobs:
           notes=$(cat <<'NOTES'
           Universal (Apple Silicon + Intel), macOS 14+. Unsigned (ad-hoc), not notarized. To install:
 
-          1. Unzip and **move Mekari Project.app to Applications first**, then launch it from there.
-          2. If macOS says it "can't be opened because Apple cannot check it for malicious software": click OK, open **System Settings → Privacy & Security**, scroll to "Mekari Project was blocked…", click **Open Anyway** and confirm. Right-click → Open also works on macOS 14.
-          3. Or in Terminal: `xattr -dr com.apple.quarantine "/Applications/Mekari Project.app"`
-          4. Delete any copy left in Downloads.
+          1. Delete any old `Mekari Project.app` / `MekariProject-*.zip` in Downloads first (otherwise the new one unzips as "Mekari Project 2.app").
+          2. Unzip, **drag Mekari Project.app into Applications in Finder** (not `mv` in Terminal), and launch it from there.
+          3. If macOS says it "can't be opened because Apple cannot check it for malicious software": click OK, open **System Settings → Privacy & Security**, scroll to "Mekari Project was blocked…", click **Open Anyway** and confirm. Right-click → Open also works on macOS 14. Or in Terminal: `xattr -dr com.apple.quarantine "/Applications/Mekari Project.app"`
+          4. Delete the zip and anything else left in Downloads.
 
           The proper fix is Developer ID signing + notarization (needs an Apple Developer account). See the README for details.
           NOTES
           )
+          # Which toolchain built the zip, e.g. "DTXcode=1540 (15F31d) DTSDKName=macosx14.5".
+          notes="Built with Xcode 15.4 on macos-14: \`$(cat dist/BUILD-INFO.txt)\`"$'\n\n'"$notes"
           gh release create "$GITHUB_REF_NAME" dist/*.zip -R "$GITHUB_REPOSITORY" --verify-tag \
             --title "Mekari Project ${GITHUB_REF_NAME#v}" "${prerelease[@]}" --generate-notes \
             --notes "$notes"

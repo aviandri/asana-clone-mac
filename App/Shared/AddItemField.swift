@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SwiftUI
 
 /// The one "add" text field (tasks in lists, board columns, My Tasks; subtasks): Return adds and keeps
@@ -104,9 +105,28 @@ struct AddItemField: NSViewRepresentable {
 
 /// An NSTextField that edits in a private, undo-free field editor (see `UndoFreeTextFieldCell`).
 final class UndoFreeTextField: NSTextField {
+    private static let log = Logger(subsystem: "com.mekari.project", category: "AddItemField")
+
     override class var cellClass: AnyClass? {
         get { UndoFreeTextFieldCell.self }
         set {}
+    }
+
+    /// Belt and braces for every build configuration: if AppKit handed this field the window's
+    /// SHARED field editor (the cell's `fieldEditor(for:)` not consulted), a SwiftUI TextField that
+    /// last used that editor can push its text into it while we type (v0.1.0 Release crash). So
+    /// verify, log, and restart editing in the private editor explicitly.
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        guard became, let cell = cell as? UndoFreeTextFieldCell else { return became }
+        if let editor = currentEditor(), editor === cell.editor { return became }
+        Self.log.error("AddItemField got the shared field editor; switching to its private editor")
+        window?.endEditing(for: self)
+        if let editor = cell.fieldEditor(for: self) {
+            let end = (stringValue as NSString).length
+            cell.select(withFrame: bounds, in: self, editor: editor, delegate: self, start: end, length: 0)
+        }
+        return became
     }
 
     /// The private field editor, created on first edit.
