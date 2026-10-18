@@ -55,7 +55,9 @@ final class CompletionFeedbackTests: XCTestCase {
     XCTAssertTrue(todayIDs(scope).contains(id), "stays in its old bucket, not hidden or moved")
     XCTAssertEqual(board.taskIDs(in: board.sections[0].id), column, "stays in place on the board")
 
-    await clock.advance(by: .milliseconds(699))
+    let linger = scope.tasks.lingerDuration
+    XCTAssertEqual(linger, .milliseconds(400))
+    await clock.advance(by: linger - .milliseconds(1))
     XCTAssertTrue(scope.tasks.isLingering(id))
     await clock.advance(by: .milliseconds(1))
     XCTAssertFalse(scope.tasks.isLingering(id))
@@ -75,19 +77,41 @@ final class CompletionFeedbackTests: XCTestCase {
   func testUncompletingEndsTheLingerAndAnOldTimerCantEndANewOne() async throws {
     let (scope, clock, _, _) = try await makeScope()
     let id = try taskID("Push notification settings", scope, in: todayIDs(scope))
+    let half = scope.tasks.lingerDuration / 2
     await scope.myTasks.toggleComplete(id)
-    await clock.advance(by: .milliseconds(400))
+    await clock.advance(by: half)
     await scope.myTasks.toggleComplete(id) // second click: un-complete
     XCTAssertFalse(scope.tasks.isLingering(id))
     XCTAssertEqual(scope.tasks[id]?.completed, false)
     XCTAssertTrue(todayIDs(scope).contains(id))
 
-    // Complete again: the first linger's timer (due at 700) doesn't cut the new one short.
+    // Complete again: the first linger's timer (due now) doesn't cut the new one short.
     await scope.myTasks.toggleComplete(id)
-    await clock.advance(by: .milliseconds(400))
+    await clock.advance(by: half)
     XCTAssertTrue(scope.tasks.isLingering(id))
-    await clock.advance(by: .milliseconds(300))
+    await clock.advance(by: half)
     XCTAssertFalse(scope.tasks.isLingering(id))
+  }
+
+  @MainActor
+  func testAChangedLingerDurationAppliesFromTheNextCompletion() async throws {
+    let (scope, clock, _, _) = try await makeScope()
+    let today = todayIDs(scope)
+    let (first, second) = (today[0], today[1])
+    await scope.myTasks.toggleComplete(first)           // lingers 400 ms
+    scope.tasks.lingerDuration = .milliseconds(300)     // e.g. a debug default while tuning
+    await scope.myTasks.toggleComplete(second)          // lingers 300 ms
+    await clock.advance(by: .milliseconds(300))
+    XCTAssertTrue(scope.tasks.isLingering(first), "the running linger keeps its duration")
+    XCTAssertFalse(scope.tasks.isLingering(second))
+    await clock.advance(by: .milliseconds(100))
+    XCTAssertFalse(scope.tasks.isLingering(first))
+
+    scope.tasks.lingerDuration = .zero                  // off
+    await scope.myTasks.toggleComplete(second)          // un-complete
+    await scope.myTasks.toggleComplete(second)
+    XCTAssertFalse(scope.tasks.isLingering(second))
+    XCTAssertFalse(todayIDs(scope).contains(second))
   }
 
   @MainActor
