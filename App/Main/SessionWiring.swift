@@ -14,6 +14,8 @@ final class SessionWiring {
     private var wiredScope: ObjectIdentifier?
     private var wiredGeneration: Int?
     private var replaying = false
+    /// The last celebration event shown (per scope), so a new scope never replays an old one.
+    private var shownCelebration: Int?
 
     init(session: AppSession, router: AppRouter, notifier: LocalNotifier) {
         self.session = session
@@ -29,6 +31,7 @@ final class SessionWiring {
         let signedIn: Bool
         let hasPendingLink: Bool
         let isSwitching: Bool
+        let celebrationID: Int?
     }
 
     private func observe() {
@@ -51,7 +54,8 @@ final class SessionWiring {
             scope: session.scope,
             signedIn: signedIn,
             hasPendingLink: router.pendingLink != nil,
-            isSwitching: session.isSwitching
+            isSwitching: session.isSwitching,
+            celebrationID: session.scope?.completionFeedback.lastEvent?.id
         )
     }
 
@@ -64,6 +68,14 @@ final class SessionWiring {
             wiredGeneration = inputs.generation
             router.scopeChanged(to: inputs.scope?.id)
             inputs.scope?.poller.onNew = { [notifier] notices in notifier.post(notices) }
+            shownCelebration = inputs.celebrationID
+        }
+
+        // A completion that finished a section, a project or today's list (decided, and gated by the
+        // Celebrations setting, in Features' CompletionFeedback; sent only once the server agreed).
+        if let id = inputs.celebrationID, id != shownCelebration {
+            shownCelebration = id
+            CelebrationPresenter.shared.celebrate()
         }
 
         guard inputs.signedIn else { return }

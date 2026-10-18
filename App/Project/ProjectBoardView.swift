@@ -35,6 +35,7 @@ private struct BoardColumn: View {
     let section: MekariProjectKit.Section?
     @Binding var selection: String?
     @State private var targeted = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let ids = store.taskIDs(in: sectionID)
@@ -56,8 +57,11 @@ private struct BoardColumn: View {
                             .onTapGesture { selection = id }
                             .taskDrag(task, enabled: store.canEdit)
                             .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: id)
+                            .transition(reduceMotion ? .opacity : .asymmetric(insertion: .opacity, removal: .move(edge: .trailing).combined(with: .opacity)))
                         }
                     }
+                    // A completed card lingers ~700 ms (TaskCache), then slides out.
+                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: scope.tasks.lingering)
                     if store.canEdit {
                         AddTaskRow { title in
                             Task { await store.addTask(title: title, section: sectionID) }

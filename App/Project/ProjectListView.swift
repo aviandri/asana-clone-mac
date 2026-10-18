@@ -10,6 +10,7 @@ struct ProjectListView: View {
     let store: ProjectStore
     @Binding var selection: String?
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         List(selection: $selection) {
@@ -21,6 +22,8 @@ struct ProjectListView: View {
             }
         }
         .listStyle(.inset)
+        // A completed row lingers ~700 ms (TaskCache), then collapses out smoothly.
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: scope.tasks.lingering)
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
                 Button("Open in New Window") { openTaskWindow(id) }

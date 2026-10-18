@@ -8,7 +8,7 @@ enum SettingsKey {
     static let notificationsEnabled = "notificationsEnabled"
     /// The occasional petal burst on completing a task (default on, like the web's "Celebrations").
     /// Same key as `CompletionFeedback.celebrationsEnabledKey`: Features honours it (no event when off).
-    static let celebrations = "celebrationsEnabled"
+    static let celebrations = CompletionFeedback.celebrationsEnabledKey
     /// A soft tick on completing a task (default off).
     static let completionSound = "completionSound"
 }
