@@ -149,10 +149,12 @@ public final class MyTasksStore {
     }
   }
 
-  /// My open tasks due today (for `CompletionFeedback`).
+  /// My open top-level tasks due today (for `CompletionFeedback`; subtasks never celebrate, so they
+  /// don't hold it back either).
   func openTasksDueToday() -> [TaskItem] {
     let today = today
-    return ids.compactMap { tasks[$0] }.filter { $0.assignee?.id == me.id && !$0.completed && $0.dueDate == today }
+    return ids.compactMap { tasks[$0] }
+      .filter { $0.assignee?.id == me.id && $0.parentId == nil && !$0.completed && $0.dueDate == today }
   }
 
   public func toggleComplete(_ id: String) async {

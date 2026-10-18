@@ -13,8 +13,10 @@ public enum Celebration: Sendable, Equatable {
 }
 
 /// Decides when a completion celebrates. `TaskCache` asks at the optimistic apply (judged against
-/// what's showing then) and reports back once the server confirms; only then is `lastEvent` set. So an
-/// un-complete, or a completion the server rejected, never celebrates.
+/// what's showing then) and reports back once the server confirms; the rule is judged again then, and
+/// only if it still holds is `lastEvent` set. So an un-complete, a completion the server rejected, or
+/// one whose "last" stopped being true meanwhile (a task completed alongside failed and reopened, a
+/// refresh brought in a new one) never celebrates.
 ///
 /// Rules: subtasks never celebrate; project > section > due today when several apply; the project and
 /// section rules need that project's `ProjectStore` loaded, and the due-today rule needs My Tasks
@@ -47,8 +49,9 @@ public final class CompletionFeedback {
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored private let minInterval: Duration
   @ObservationIgnored private let defaults: UserDefaults
-  /// An event fired less than `minInterval` ago.
-  @ObservationIgnored private var coolingDown = false
+  /// Shared by every scope of a session (`AppSession` swaps its own in), so switching workspaces doesn't
+  /// reset the window.
+  @ObservationIgnored var cooldown = CelebrationCooldown()
   @ObservationIgnored private var nextID = 0
 
   // Wired by `WorkspaceScope`.
@@ -83,18 +86,32 @@ public final class CompletionFeedback {
     return nil
   }
 
-  /// The server confirmed completing `taskID`: publishes `celebration` unless the task was un-completed
-  /// meanwhile, celebrations are off, or the last event was under `minInterval` ago.
-  func confirm(_ celebration: Celebration, taskID: String) {
-    guard tasks?[taskID]?.completed == true, celebrationsEnabled else { return }
-    guard !coolingDown else { return }
+  /// The server confirmed completing `taskID`, which celebrated when it was clicked: publishes what it
+  /// clears now, unless the task was un-completed meanwhile, it no longer clears anything, celebrations
+  /// are off, or the last event was under `minInterval` ago.
+  func confirm(taskID: String) {
+    guard tasks?[taskID]?.completed == true, celebrationsEnabled, !cooldown.isActive,
+          let celebration = celebration(forCompleting: taskID) else { return }
     nextID += 1
     lastEvent = Event(id: nextID, taskID: taskID, celebration: celebration)
-    coolingDown = true
-    let (clock, interval) = (clock, minInterval)
+    cooldown.start(on: clock, for: minInterval)
+  }
+}
+
+/// The rate-limit window: active for `interval` after `start`.
+@MainActor
+final class CelebrationCooldown {
+  private(set) var isActive = false
+  private var token = 0
+
+  func start(on clock: any Clock<Duration>, for interval: Duration) {
+    token += 1
+    let mine = token
+    isActive = true
     Task { [weak self] in
       try? await clock.sleep(for: interval)
-      self?.coolingDown = false
+      guard let self, self.token == mine else { return }
+      self.isActive = false
     }
   }
 }

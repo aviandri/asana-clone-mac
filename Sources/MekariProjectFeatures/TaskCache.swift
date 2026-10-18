@@ -109,16 +109,16 @@ public final class TaskCache {
     recompute(id)
     if changes.completed == false { endLinger(id) }
     var linger: Int?
-    var celebration: Celebration?
+    var celebrates = false
     if completing {
       linger = startLinger(id)
-      celebration = feedback?.celebration(forCompleting: id)
+      celebrates = feedback?.celebration(forCompleting: id) != nil
     }
     do {
       let saved = try await api.updateTask(id, changes)
       finish(edit, of: id)
       upsert(saved)
-      if let celebration { feedback?.confirm(celebration, taskID: id) }
+      if celebrates { feedback?.confirm(taskID: id) }
     } catch {
       finish(edit, of: id)
       if let linger { endLinger(id, token: linger) }
