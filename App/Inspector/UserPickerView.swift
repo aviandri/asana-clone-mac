@@ -44,7 +44,9 @@ struct UserPickerView: View {
             }
             .listStyle(.plain)
             .overlay {
-                if search.isLoading && search.results.isEmpty {
+                if let error = search.lastError {
+                    Text(error.message).foregroundStyle(.red).font(.callout).multilineTextAlignment(.center).padding()
+                } else if search.isLoading && search.results.isEmpty {
                     ProgressView().controlSize(.small)
                 } else if !search.isLoading && search.results.isEmpty {
                     Text("No matches").foregroundStyle(.secondary)

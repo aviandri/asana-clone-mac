@@ -12,9 +12,7 @@ final class LaunchSmokeUITests: XCTestCase {
         app.launchArguments = ["-UITestFakeAPI"]
         app.launch()
 
-        // The App shell PR (4) adds the sidebar and honours -UITestFakeAPI. Strict, so this test
-        // fails with "expected failure but passed" once it does: then delete this line.
-        XCTExpectFailure("sidebar.myTasks arrives with the App shell PR (4)", strict: true)
+        // -UITestFakeAPI boots FakeMekariAPI signed in as alice (AppBootstrap), straight into the main window.
         XCTAssertTrue(
             app.descendants(matching: .any)["sidebar.myTasks"].waitForExistence(timeout: 10),
             "no element with accessibilityIdentifier sidebar.myTasks"
