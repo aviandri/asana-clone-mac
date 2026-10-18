@@ -114,7 +114,9 @@ final class AppSessionTests: XCTestCase {
     await fake.hold(.switchWorkspace)
     async let first: Void = session.switchWorkspace(to: DemoIDs.acmePilot)
     await waitUntil("the first POST is in flight") { await fake.parkedCount(.switchWorkspace) == 1 }
+    // `async let` children start in no fixed order: queue them one at a time so "newest" is certain.
     async let second: Void = session.switchWorkspace(to: DemoIDs.acmePilot) // queued behind the first…
+    await waitUntil("second queued") { session.queuedJobs == 2 }
     async let third: Void = session.switchWorkspace(to: DemoIDs.mekari)     // …and superseded by this one
     await waitUntil("all three queued") { session.queuedJobs == 3 }
     XCTAssertTrue(session.isSwitching)
