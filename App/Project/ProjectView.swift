@@ -12,6 +12,8 @@ struct ProjectView: View {
 
     @State private var addingSection = false
     @State private var newSectionName = ""
+    @State private var renamingSection: MekariProjectKit.Section?
+    @State private var renameDraft = ""
 
     var body: some View {
         Group {
@@ -81,6 +83,21 @@ struct ProjectView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .alert("Rename Section", isPresented: Binding(get: { renamingSection != nil }, set: { if !$0 { renamingSection = nil } })) {
+            TextField("Section name", text: $renameDraft)
+            Button("Rename") {
+                let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let section = renamingSection, !trimmed.isEmpty, trimmed != section.name {
+                    Task { await store.renameSection(section.id, to: trimmed) }
+                }
+                renamingSection = nil
+            }
+            Button("Cancel", role: .cancel) { renamingSection = nil }
+        }
+        .environment(\.renameSection) { section in
+            renameDraft = section.name
+            renamingSection = section
+        }
         .task(id: session.generation) { await store.load() }
     }
 }
@@ -140,28 +157,28 @@ enum DropRules {
 struct SectionRenameModifier: ViewModifier {
     let store: ProjectStore
     let section: MekariProjectKit.Section?
-    @State private var renaming = false
-    @State private var name = ""
+    @Environment(\.renameSection) private var renameSection
 
     func body(content: Content) -> some View {
         content
             .contextMenu {
                 if let section, store.canEdit {
-                    Button("Rename Section…") {
-                        name = section.name
-                        renaming = true
-                    }
+                    Button("Rename Section…") { renameSection(section) }
                 }
             }
-            .alert("Rename Section", isPresented: $renaming) {
-                TextField("Section name", text: $name)
-                Button("Rename") {
-                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if let section, !trimmed.isEmpty, trimmed != section.name {
-                        Task { await store.renameSection(section.id, to: trimmed) }
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            }
+    }
+}
+
+/// Asks the project view to rename a section. The rename alert (and its TextField's state) lives on
+/// ProjectView, outside the List: no SwiftUI text field state inside List rows or headers, whose
+/// updates can push text into a live field editor (v0.1.0 crash family).
+struct RenameSectionKey: EnvironmentKey {
+    static let defaultValue: @MainActor (MekariProjectKit.Section) -> Void = { _ in }
+}
+
+extension EnvironmentValues {
+    var renameSection: @MainActor (MekariProjectKit.Section) -> Void {
+        get { self[RenameSectionKey.self] }
+        set { self[RenameSectionKey.self] = newValue }
     }
 }
