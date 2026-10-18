@@ -9,3 +9,4 @@ build/
 *.xcarchive
 *.zip
 *.dmg
+App/Info.plist

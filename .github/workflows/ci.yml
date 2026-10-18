@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-kit:
+    # Kit + Features build and test on Linux (SPEC-MAC §3); contract tests skip without MP_BASE_URL.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift build --build-tests
+      - run: swift test --skip-build
+
+  linux-contract:
+    # Like the BE `contract` job: BE main, migrated + full seed, then the Swift contract tests.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: swift:6.0
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: asana
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      # Inside the job container the service is reachable by its name.
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/asana
+      JWT_SECRET: ci-only-secret-at-least-16-chars
+      APP_URL: http://localhost:5173
+      APP_TIMEZONE: Asia/Jakarta
+      NODE_ENV: development
+      PORT: "3000"
+      HOST: 127.0.0.1
+      # The contract suite logs in ~15 times from one IP; the BE default is 10/min.
+      AUTH_RATE_LIMIT_MAX: "1000"
+      MP_BASE_URL: http://127.0.0.1:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: aviandri/asana-clone-be
+          # github.token can only read this repo; if asana-clone-be is private, add a fine-grained
+          # read-only PAT (Contents: read on asana-clone-be) as the BE_REPO_TOKEN secret.
+          token: ${{ secrets.BE_REPO_TOKEN || github.token }}
+          ref: main
+          path: be
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: be/package-lock.json
+      - name: Backend (migrate, build, seed, start)
+        working-directory: be
+        run: |
+          npm ci
+          npx prisma migrate deploy
+          npm run build
+          npm run seed
+          nohup npm start > ../be.log 2>&1 &
+          for i in $(seq 1 30); do
+            node -e 'fetch("http://127.0.0.1:3000/health").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' && exit 0
+            sleep 1
+          done
+          echo "backend did not become healthy"; cat ../be.log; exit 1
+      - run: swift build --build-tests
+      - run: swift test --skip-build --filter ContractTests
+      - name: Backend log
+        if: always()
+        run: cat be.log || true
+
+  macos-app:
+    # The app target only builds on macOS: XcodeGen → build + test (unsigned), then a universal
+    # Release archive, ad-hoc signed and zipped (uploaded on main and tags).
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      PROJECT: MekariProject.xcodeproj
+      SCHEME: MekariProjectApp
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Package tests on macOS
+        run: swift test
+      - name: Build and test the app
+        run: |
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO build test
+      - name: Archive (Release, universal)
+        run: |
+          xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
+            -destination 'generic/platform=macOS' -archivePath build/MekariProject.xcarchive \
+            ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO archive
+          APP="build/MekariProject.xcarchive/Products/Applications/Mekari Project.app"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --verbose=2 "$APP"
+          lipo -archs "$APP/Contents/MacOS/Mekari Project" | tee /dev/stderr | grep -q 'x86_64 arm64\|arm64 x86_64'
+          ditto -c -k --keepParent "$APP" "build/MekariProject-${GITHUB_SHA::7}.zip"
+      - name: Upload app
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MekariProject-${{ github.sha }}
+          path: build/MekariProject-*.zip
+          retention-days: 30
