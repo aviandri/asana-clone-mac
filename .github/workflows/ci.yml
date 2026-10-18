@@ -47,7 +47,8 @@ jobs:
       NODE_ENV: development
       PORT: "3000"
       HOST: 127.0.0.1
-      AUTH_RATE_LIMIT_MAX: "100"
+      # The contract suite logs in ~15 times from one IP; the BE default is 10/min.
+      AUTH_RATE_LIMIT_MAX: "1000"
       MP_BASE_URL: http://127.0.0.1:3000
     steps:
       - uses: actions/checkout@v4
