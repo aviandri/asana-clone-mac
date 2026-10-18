@@ -21,24 +21,6 @@ struct ProjectListView: View {
             }
         }
         .listStyle(.inset)
-        .contextMenu(forSelectionType: String.self) { ids in
-            if let id = ids.first {
-                Button("Open in New Window") { openTaskWindow(id) }
-                if store.canEdit {
-                    Button(scope.tasks[id]?.completed == true ? "Mark Incomplete" : "Mark Complete") {
-                        Task { await store.toggleComplete(id) }
-                    }
-                    Menu("Move to Section") {
-                        ForEach(store.sections) { section in
-                            Button(section.name) { Task { await store.move(taskID: id, toSection: section.id, before: nil) } }
-                                .disabled(scope.tasks[id]?.sectionId == section.id)
-                        }
-                    }
-                }
-            }
-        } primaryAction: { ids in
-            if let id = ids.first { openTaskWindow(id) }
-        }
         .overlay {
             if store.detail != nil, store.sections.isEmpty, !store.hasUnsectionedTasks {
                 ContentUnavailableView("No Tasks Yet", systemImage: "checklist", description: Text(store.canEdit ? "Add a section, then add tasks to it." : "Nothing here yet."))
@@ -56,6 +38,7 @@ struct ProjectListView: View {
                         Task { await store.toggleComplete(id) }
                     }
                     .tag(id)
+                    .taskRowActions(open: { openTaskWindow(id) }) { menu(for: id) }
                     .taskDrag(task, enabled: store.canEdit)
                     .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: id)
                 }
@@ -70,6 +53,21 @@ struct ProjectListView: View {
             Text(title)
                 .modifier(SectionRenameModifier(store: store, section: section))
                 .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: store.taskIDs(in: sectionID).first)
+        }
+    }
+
+    @ViewBuilder private func menu(for id: String) -> some View {
+        Button("Open in New Window") { openTaskWindow(id) }
+        if store.canEdit {
+            Button(scope.tasks[id]?.completed == true ? "Mark Incomplete" : "Mark Complete") {
+                Task { await store.toggleComplete(id) }
+            }
+            Menu("Move to Section") {
+                ForEach(store.sections) { section in
+                    Button(section.name) { Task { await store.move(taskID: id, toSection: section.id, before: nil) } }
+                        .disabled(scope.tasks[id]?.sectionId == section.id)
+                }
+            }
         }
     }
 

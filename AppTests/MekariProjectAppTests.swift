@@ -101,6 +101,8 @@ final class MekariProjectAppTests: XCTestCase {
             _ = router.showSearch
         } onChange: { MainActor.assumeIsolated { changes.count += 1 } }
         router.selectTask("t1")
+        router.taskSelection = "t1"         // what List(selection: $router.taskSelection) writes back
+        router.sidebarSelection = .myTasks
         router.select(.myTasks)
         router.open(.task(id: "t1", projectID: nil))
         XCTAssertEqual(changes.count, 0)

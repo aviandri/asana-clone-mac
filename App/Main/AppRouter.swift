@@ -41,6 +41,19 @@ final class AppRouter {
         selectedTask = id
     }
 
+    /// For `List(selection: $router.taskSelection)`: a key-path binding stays the same binding across
+    /// renders (a closure Binding is new every time), and writes go through the dedup above.
+    var taskSelection: String? {
+        get { selectedTask }
+        set { selectTask(newValue) }
+    }
+
+    /// The sidebar's `List(selection:)`: a new section, no task.
+    var sidebarSelection: SidebarItem? {
+        get { item }
+        set { select(newValue) }
+    }
+
     func open(_ target: NavigationTarget) {
         switch target {
         case .task(let id, let projectID):

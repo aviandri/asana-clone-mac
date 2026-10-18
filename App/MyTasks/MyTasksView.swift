@@ -37,23 +37,13 @@ struct MyTasksView: View {
                                 Task { await store.toggleComplete(id) }
                             }
                             .tag(id)
+                            .taskRowActions(open: { openTaskWindow(id) }) { menu(for: id) }
                         }
                     }
                 }
             }
         }
         .listStyle(.inset)
-        .contextMenu(forSelectionType: String.self) { ids in
-            if let id = ids.first {
-                Button("Open in New Window") { openTaskWindow(id) }
-                Button(scope.tasks[id]?.completed == true ? "Mark Incomplete" : "Mark Complete") {
-                    Task { await store.toggleComplete(id) }
-                }
-                .disabled(!(scope.tasks[id].map { scope.canEdit(task: $0) } ?? false))
-            }
-        } primaryAction: { ids in
-            if let id = ids.first { openTaskWindow(id) }
-        }
         .overlay {
             if store.groups.isEmpty {
                 switch store.phase {
@@ -81,6 +71,14 @@ struct MyTasksView: View {
             }
         }
         .task { await store.refresh() }
+    }
+
+    @ViewBuilder private func menu(for id: String) -> some View {
+        Button("Open in New Window") { openTaskWindow(id) }
+        Button(scope.tasks[id]?.completed == true ? "Mark Incomplete" : "Mark Complete") {
+            Task { await store.toggleComplete(id) }
+        }
+        .disabled(!(scope.tasks[id].map { scope.canEdit(task: $0) } ?? false))
     }
 
     private func openTaskWindow(_ id: String) {
@@ -160,5 +158,17 @@ struct TaskRow: View {
         .padding(.vertical, 2)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("task.row.\(task.id)")
+    }
+}
+
+/// Right-click menu and double-click (open in a new window) for a task row in a `List(selection:)`.
+/// Per row on purpose: `contextMenu(forSelectionType:primaryAction:)` handles clicks with its own
+/// selection tracking, and on macOS 14 that and the List both wrote the selection in one frame
+/// ("SelectionManagerBox<String> tried to update multiple times per frame", rc1 QA F3).
+@MainActor
+extension View {
+    func taskRowActions<Items: View>(open: @escaping () -> Void, @ViewBuilder menu: () -> Items) -> some View {
+        contextMenu(menuItems: menu)
+            .simultaneousGesture(TapGesture(count: 2).onEnded { open() })
     }
 }

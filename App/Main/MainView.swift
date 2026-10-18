@@ -18,18 +18,16 @@ struct MainView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        // The task lists and the board share one selection, written once through the router.
-        let taskSelection = Binding(get: { router.selectedTask }, set: { router.selectTask($0) })
         NavigationSplitView {
-            SidebarView(session: session, scope: scope, selection: Binding(get: { router.item }, set: { router.select($0) }))
+            SidebarView(session: session, scope: scope, selection: $router.sidebarSelection)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 320)
         } detail: {
-            content(taskSelection)
+            content
                 // No edits against a workspace that's about to be replaced.
                 .disabled(session.isSwitching)
                 .navigationSubtitle(session.isSwitching ? "Switching workspace…" : "")
                 .inspector(isPresented: $showInspector) {
-                    inspector(taskSelection)
+                    inspector
                         .disabled(session.isSwitching)
                         .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
                 }
@@ -76,21 +74,21 @@ struct MainView: View {
         return nil
     }
 
-    @ViewBuilder private func content(_ selection: Binding<String?>) -> some View {
+    @ViewBuilder private var content: some View {
         switch router.item ?? .myTasks {
         case .myTasks:
-            MyTasksView(scope: scope, store: scope.myTasks, selection: selection)
+            MyTasksView(scope: scope, store: scope.myTasks, selection: $router.taskSelection)
         case .inbox:
             InboxView(session: session, inbox: scope.inbox, router: router)
         case .project(let id):
-            ProjectView(session: session, scope: scope, store: scope.project(id), selection: selection)
+            ProjectView(session: session, scope: scope, store: scope.project(id), selection: $router.taskSelection)
                 .id(id)
         }
     }
 
-    @ViewBuilder private func inspector(_ selection: Binding<String?>) -> some View {
+    @ViewBuilder private var inspector: some View {
         if let id = router.selectedTask {
-            TaskInspectorView(session: session, scope: scope, store: scope.taskDetail(id), onOpenTask: { selection.wrappedValue = $0 })
+            TaskInspectorView(session: session, scope: scope, store: scope.taskDetail(id), onOpenTask: { router.selectTask($0) })
                 .id(id)
         } else {
             ContentUnavailableView("No Task Selected", systemImage: "sidebar.trailing", description: Text("Select a task to see its details."))
