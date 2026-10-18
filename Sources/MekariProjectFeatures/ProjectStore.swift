@@ -37,7 +37,7 @@ public final class ProjectStore {
     return workspaceRole == .admin || detail.myRole != .commenter
   }
 
-  /// Top-level tasks in a section (nil = "No section"), by position.
+  /// Top-level tasks in a section (nil = "No section"), by position. Just-completed tasks linger.
   public func taskIDs(in sectionID: String?) -> [String] {
     orderedTasks(in: sectionID, includeCompleted: showCompleted).map(\.id)
   }
@@ -212,9 +212,15 @@ public final class ProjectStore {
 
   public func clearError() { lastError = nil }
 
+  /// Open top-level tasks in every section (for `CompletionFeedback`).
+  func openTopLevelTasks() -> [TaskItem] {
+    ids.compactMap { tasks[$0] }.filter { $0.projectId == projectID && $0.parentId == nil && !$0.completed }
+  }
+
   private func orderedTasks(in sectionID: String?, includeCompleted: Bool) -> [TaskItem] {
     ids.compactMap { tasks[$0] }
-      .filter { $0.projectId == projectID && $0.parentId == nil && $0.sectionId == sectionID && (includeCompleted || !$0.completed) }
+      .filter { $0.projectId == projectID && $0.parentId == nil && $0.sectionId == sectionID }
+      .filter { includeCompleted || !$0.completed || tasks.isLingering($0.id) }
       .sorted { $0.position != $1.position ? $0.position < $1.position : $0.createdAt < $1.createdAt }
   }
 }

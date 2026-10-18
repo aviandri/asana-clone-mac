@@ -15,6 +15,7 @@ public final class WorkspaceScope: Identifiable {
   public let poller: NotificationPoller
   public let search: SearchStore
   public let quickAdd: QuickAddModel
+  public let completionFeedback: CompletionFeedback
 
   @ObservationIgnored private let api: any MekariAPI
   @ObservationIgnored private let clock: any Clock<Duration>
@@ -22,19 +23,25 @@ public final class WorkspaceScope: Identifiable {
   @ObservationIgnored private var details: [String: TaskDetailStore] = [:]
 
   public init(api: any MekariAPI, workspace: Workspace, me: UserSummary, clock: any Clock<Duration> = ContinuousClock(),
-              calendar: Calendar = .current, now: @escaping () -> Date = Date.init) {
+              calendar: Calendar = .current, now: @escaping () -> Date = Date.init, defaults: UserDefaults = .standard) {
     self.api = api
     self.clock = clock
     id = workspace.id
     self.workspace = workspace
     self.me = me
-    tasks = TaskCache(api: api)
+    tasks = TaskCache(api: api, clock: clock)
     sidebar = SidebarStore(api: api)
     myTasks = MyTasksStore(api: api, tasks: tasks, me: me, calendar: calendar, now: now)
     inbox = InboxStore(api: api)
     poller = NotificationPoller(inbox: inbox, clock: clock)
     search = SearchStore(api: api, clock: clock)
     quickAdd = QuickAddModel(api: api, me: me, myTasks: myTasks)
+    completionFeedback = CompletionFeedback(clock: clock, defaults: defaults)
+    completionFeedback.tasks = tasks
+    completionFeedback.myTasks = myTasks
+    completionFeedback.me = me
+    completionFeedback.projectStore = { [weak self] id in self?.projects[id] }
+    tasks.feedback = completionFeedback
   }
 
   /// One store per project, kept for the life of the scope.
