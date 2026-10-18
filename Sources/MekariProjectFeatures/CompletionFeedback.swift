@@ -56,6 +56,8 @@ public final class CompletionFeedback {
 
   // Wired by `WorkspaceScope`.
   @ObservationIgnored weak var tasks: TaskCache?
+  /// The owning scope was closed: a late confirm must not celebrate or start the session-wide cooldown.
+  @ObservationIgnored var isClosed: () -> Bool = { false }
   @ObservationIgnored weak var myTasks: MyTasksStore?
   @ObservationIgnored var me: UserSummary?
   /// A project's store, only if one exists already (never creates one).
@@ -90,7 +92,7 @@ public final class CompletionFeedback {
   /// clears now, unless the task was un-completed meanwhile, it no longer clears anything, celebrations
   /// are off, or the last event was under `minInterval` ago.
   func confirm(taskID: String) {
-    guard tasks?[taskID]?.completed == true, celebrationsEnabled, !cooldown.isActive,
+    guard !isClosed(), tasks?[taskID]?.completed == true, celebrationsEnabled, !cooldown.isActive,
           let celebration = celebration(forCompleting: taskID) else { return }
     nextID += 1
     lastEvent = Event(id: nextID, taskID: taskID, celebration: celebration)
