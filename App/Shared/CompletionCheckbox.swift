@@ -12,9 +12,11 @@ struct CompletionCheckbox: View {
     var size: CGFloat = 15
     var canEdit = true
     let action: () -> Void
+    @State private var expectation: CompletionExpectation?
 
     var body: some View {
         Button {
+            expectation = CompletionExpectation(target: !completed)
             CompletionEffects.play(completing: !completed, title: title)
             action()
         } label: {
@@ -23,6 +25,52 @@ struct CompletionCheckbox: View {
         .buttonStyle(.plain)
         .disabled(!canEdit)
         .accessibilityLabel(completed ? "Mark \(title) incomplete" : "Mark \(title) complete")
+        .onChange(of: completed) { _, new in CompletionExpectation.check(&expectation, completed: new, title: title) }
+    }
+}
+
+/// The inspector's "Mark Complete" / "Completed" button, with the same feedback as the checkbox.
+@MainActor
+struct CompleteTaskButton: View {
+    let completed: Bool
+    let title: String
+    var canEdit = true
+    let action: () -> Void
+    @State private var expectation: CompletionExpectation?
+
+    var body: some View {
+        Button {
+            expectation = CompletionExpectation(target: !completed)
+            CompletionEffects.play(completing: !completed, title: title)
+            action()
+        } label: {
+            Label {
+                Text(completed ? "Completed" : "Mark Complete")
+            } icon: {
+                CompletionMark(completed: completed, size: 14)
+            }
+        }
+        .disabled(!canEdit)
+        .onChange(of: completed) { _, new in CompletionExpectation.check(&expectation, completed: new, title: title) }
+    }
+}
+
+/// What a click asked for, so a rollback (the server said no; TaskCache reverted the optimistic
+/// change) is announced to VoiceOver instead of silently undoing the "Completed …" it just heard.
+struct CompletionExpectation {
+    let target: Bool
+    let at = Date()
+
+    @MainActor
+    static func check(_ expectation: inout CompletionExpectation?, completed: Bool, title: String) {
+        guard let current = expectation else { return }
+        guard Date().timeIntervalSince(current.at) < 15 else {
+            expectation = nil
+            return
+        }
+        if completed == current.target { return } // the optimistic change landing
+        expectation = nil
+        AccessibilityNotification.Announcement(current.target ? "Couldn't complete \(title)" : "Couldn't reopen \(title)").post()
     }
 }
 
@@ -105,7 +153,11 @@ enum CompletionEffects {
         // Force Touch trackpads only; a no-op elsewhere.
         NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
         if completing {
-            CelebrationPresenter.shared.noteCompletionPoint(NSEvent.mouseLocation)
+            // The burst starts at the click; a keyboard completion has none (the presenter falls back
+            // to the window).
+            if let event = NSApp.currentEvent, [.leftMouseDown, .leftMouseUp].contains(event.type) {
+                CelebrationPresenter.shared.noteCompletionPoint(NSEvent.mouseLocation)
+            }
             if UserDefaults.standard.bool(forKey: SettingsKey.completionSound) {
                 NSSound(named: "Tink")?.play()
             }

@@ -45,8 +45,11 @@ final class CelebrationPresenter {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.ignoresMouseEvents = true
-        panel.level = .floating
-        panel.collectionBehavior = [.transient, .ignoresCycle, .canJoinAllSpaces]
+        // Above the menu bar extra's window too (a completion there bursts over it), and on full-screen
+        // Spaces; never hidden because the app isn't active.
+        panel.level = .statusBar
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.isReleasedWhenClosed = false
         panel.contentView = NSHostingView(rootView: PetalBurst(start: Date()).frame(width: side, height: side))
         panel.orderFrontRegardless()

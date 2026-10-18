@@ -89,15 +89,8 @@ struct TaskInspectorView: View {
                 .help("Open the parent task")
             }
             HStack {
-                Button {
-                    CompletionEffects.play(completing: !task.completed, title: task.title)
+                CompleteTaskButton(completed: task.completed, title: task.title, canEdit: store.canEdit) {
                     Task { await store.toggleComplete() }
-                } label: {
-                    Label {
-                        Text(task.completed ? "Completed" : "Mark Complete")
-                    } icon: {
-                        CompletionMark(completed: task.completed, size: 14)
-                    }
                 }
                 .tint(task.completed ? .green : nil)
                 .buttonStyle(.bordered)
