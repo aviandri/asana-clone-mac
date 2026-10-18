@@ -150,4 +150,36 @@ final class AppFlowUITests: XCTestCase {
         let projectLink = XCTNSPredicateExpectation(predicate: predicate, object: opened)
         XCTAssertEqual(XCTWaiter().wait(for: [projectLink], timeout: 5), .completed, opened.value as? String ?? "")
     }
+
+    /// rc1 QA crash: rapid Add task in My Tasks and in a project. The field lives outside the Lists,
+    /// clears after each add and keeps focus for the next one.
+    @MainActor
+    func testRapidAddTaskInMyTasksAndAProject() {
+        let app = launch()
+        let rows = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'task.row.'"))
+        let field = element(app, "addTask.field")
+        XCTAssertTrue(field.waitForExistence(timeout: 5), "My Tasks add field missing")
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10))
+        let before = rows.count
+        field.click()
+        for n in 1...3 { field.typeText("Quick task \(n)\r") }
+        let added = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == %d", before + 3), object: rows)
+        XCTAssertEqual(XCTWaiter().wait(for: [added], timeout: 10), .completed, "My Tasks rows: \(rows.count), expected \(before + 3)")
+        XCTAssertEqual(field.value as? String ?? "", "", "the field clears after adding")
+
+        element(app, "sidebar.project.\(boardProject)").click()
+        // Mobile App v2 opens as a Board; the List view is the one with the add bar.
+        let listMode = app.toolbars.descendants(matching: .any)["List"].firstMatch
+        XCTAssertTrue(listMode.waitForExistence(timeout: 10), "List/Board picker missing")
+        listMode.click()
+        let addButton = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'project.addTask.'")).firstMatch
+        XCTAssertTrue(addButton.waitForExistence(timeout: 10), "section Add task button missing")
+        let projectBefore = rows.count
+        addButton.click()
+        let projectField = element(app, "addTask.field")
+        XCTAssertTrue(projectField.waitForExistence(timeout: 5), "project add bar didn't open")
+        for n in 1...3 { projectField.typeText("Section task \(n)\r") }
+        let projectAdded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "count == %d", projectBefore + 3), object: rows)
+        XCTAssertEqual(XCTWaiter().wait(for: [projectAdded], timeout: 10), .completed, "project rows: \(rows.count), expected \(projectBefore + 3)")
+    }
 }

@@ -9,26 +9,10 @@ struct MyTasksView: View {
     @Bindable var store: MyTasksStore
     @Binding var selection: String?
 
-    @State private var newTitle = ""
-    @FocusState private var addFocused: Bool
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         List(selection: $selection) {
-            Section {
-                HStack(spacing: 8) {
-                    Image(systemName: "plus.circle")
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                    TextField("Add task", text: $newTitle)
-                        .textFieldStyle(.plain)
-                        .focused($addFocused)
-                        .onSubmit(addTask)
-                        .accessibilityLabel("New task title")
-                }
-                .selectionDisabled()
-            }
-
             ForEach(store.groups) { group in
                 Section(group.title) {
                     ForEach(group.taskIDs, id: \.self) { id in
@@ -43,6 +27,18 @@ struct MyTasksView: View {
             }
         }
         .listStyle(.inset)
+        // The add field lives above the List, never in one of its recycled rows (see AddTaskRow).
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                AddTaskRow { title in
+                    Task { await store.addTask(title: title) }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                Divider()
+            }
+            .background(.bar)
+        }
         .contextMenu(forSelectionType: String.self) { ids in
             if let id = ids.first {
                 Button("Open in New Window") { openTaskWindow(id) }
@@ -85,14 +81,6 @@ struct MyTasksView: View {
 
     private func openTaskWindow(_ id: String) {
         openWindow(id: WindowID.task, value: TaskWindowRef(workspaceID: scope.id, taskID: id))
-    }
-
-    private func addTask() {
-        let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-        newTitle = ""
-        Task { await store.addTask(title: title) }
-        addFocused = true
     }
 }
 
