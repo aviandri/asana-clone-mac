@@ -22,20 +22,54 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
     session = URLSession(configuration: configuration)
   }
 
+  /// Cancelling the calling task cancels the `URLSessionTask` and throws `CancellationError`.
   public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-    // The continuation form works on every Foundation (some Linux toolchains lack `data(for:)`).
-    try await withCheckedThrowingContinuation { continuation in
-      let task = session.dataTask(with: request) { data, response, error in
-        if let error {
-          continuation.resume(throwing: error)
-        } else if let http = response as? HTTPURLResponse {
-          continuation.resume(returning: (data ?? Data(), http))
-        } else {
-          continuation.resume(throwing: URLError(.badServerResponse))
+    let handle = TaskHandle()
+    return try await withTaskCancellationHandler {
+      // The continuation form works on every Foundation (some Linux toolchains lack `data(for:)`).
+      try await withCheckedThrowingContinuation { continuation in
+        let task = session.dataTask(with: request) { data, response, error in
+          if let error {
+            let cancelled = (error as? URLError)?.code == .cancelled
+            continuation.resume(throwing: cancelled ? CancellationError() : error)
+          } else if let http = response as? HTTPURLResponse {
+            continuation.resume(returning: (data ?? Data(), http))
+          } else {
+            continuation.resume(throwing: URLError(.badServerResponse))
+          }
         }
+        handle.start(task)
       }
-      task.resume()
+    } onCancel: {
+      handle.cancel()
     }
+  }
+
+  /// Settings this transport relies on (tested).
+  var configuration: URLSessionConfiguration { session.configuration }
+}
+
+/// Holds the data task so a cancellation that races with its start still cancels it.
+private final class TaskHandle: @unchecked Sendable {
+  private let lock = NSLock()
+  private var task: URLSessionDataTask?
+  private var cancelled = false
+
+  func start(_ task: URLSessionDataTask) {
+    let shouldCancel = lock.locked { () -> Bool in
+      self.task = task
+      return cancelled
+    }
+    task.resume()
+    if shouldCancel { task.cancel() }
+  }
+
+  func cancel() {
+    let task = lock.locked { () -> URLSessionDataTask? in
+      cancelled = true
+      return self.task
+    }
+    task?.cancel()
   }
 }
 

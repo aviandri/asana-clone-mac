@@ -139,7 +139,8 @@ public actor LiveMekariAPI: MekariAPI {
   // MARK: - Stories
 
   public func stories(taskID: String) async throws -> [Story] {
-    try await list("/tasks/\(taskID)/stories")
+    let feed: StoryFeed = try await get("/tasks/\(taskID)/stories")
+    return feed.data
   }
 
   public func addComment(taskID: String, body: String) async throws -> Comment {
@@ -213,8 +214,9 @@ public actor LiveMekariAPI: MekariAPI {
       request.httpBody = try encoder.encode(body)
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
-    if let token = tokens.load() {
-      request.setValue("\(SessionCookie.name)=\(token)", forHTTPHeaderField: "Cookie")
+    let sentToken = tokens.load()
+    if let sentToken {
+      request.setValue("\(SessionCookie.name)=\(sentToken)", forHTTPHeaderField: "Cookie")
     }
     let sentWorkspace = LiveMekariAPI.sendsWorkspaceHeader(path) ? workspaceID : nil
     if let sentWorkspace {
@@ -224,9 +226,14 @@ public actor LiveMekariAPI: MekariAPI {
     let (data, response) = try await perform(request)
     guard (200..<300).contains(response.statusCode) else {
       let error = APIError.from(status: response.statusCode, body: data)
-      if response.statusCode == 401, path != "/auth/login" {
-        tokens.clear()
-        eventSink.yield(.unauthorized)
+      if response.statusCode == 401 {
+        // Only a 401 for the session we still hold ends it: a late answer to a request sent with an
+        // older token (the poller, another window) must not sign out a fresh session. Login and
+        // logout never emit.
+        if let sentToken, tokens.load() == sentToken, path != "/auth/login", path != "/auth/logout" {
+          tokens.clear()
+          eventSink.yield(.unauthorized)
+        }
       } else if response.statusCode == 404, let sentWorkspace, LiveMekariAPI.isScopedCollection(method, path) {
         eventSink.yield(.workspaceLost(workspaceID: sentWorkspace))
       }
@@ -235,12 +242,19 @@ public actor LiveMekariAPI: MekariAPI {
     return (data, response)
   }
 
+  /// Cancellation is passed through as `CancellationError` (never "Can't reach the server").
   private func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
     do {
+      try Task.checkCancellation()
       return try await transport.send(request)
     } catch let error as APIError {
       throw error
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch let error as URLError where error.code == .cancelled {
+      throw CancellationError()
     } catch {
+      if Task.isCancelled { throw CancellationError() }
       throw APIError.transport()
     }
   }
@@ -248,6 +262,8 @@ public actor LiveMekariAPI: MekariAPI {
   private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
     do {
       return try decoder.decode(T.self, from: data)
+    } catch let error as DecodingError {
+      throw APIError.decoding("\(T.self): \(DecodingFailure.describe(error))")
     } catch {
       throw APIError.decoding("\(T.self)")
     }
@@ -292,3 +308,24 @@ enum QueryEncoding {
     value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
   }
 }
+
+/// A short, diagnosable description of a decoding failure: where (coding path) and what.
+enum DecodingFailure {
+  static func describe(_ error: DecodingError) -> String {
+    let context: DecodingError.Context
+    switch error {
+    case .typeMismatch(_, let c), .valueNotFound(_, let c), .dataCorrupted(let c): context = c
+    case .keyNotFound(let key, let c):
+      return "\(path(c.codingPath + [key])): missing key"
+    @unknown default:
+      return "\(error)"
+    }
+    return "\(path(context.codingPath)): \(context.debugDescription)"
+  }
+
+  private static func path(_ keys: [CodingKey]) -> String {
+    let parts = keys.map { $0.intValue.map { "[\($0)]" } ?? ".\($0.stringValue)" }.joined()
+    return parts.isEmpty ? "$" : "$" + parts
+  }
+}
+
