@@ -24,7 +24,7 @@ struct TaskInspectorView: View {
                         header(task, loaded: loaded)
                         fields(task)
                         if loaded || !(task.description ?? "").isEmpty {
-                            DescriptionEditor(text: task.description ?? "", canEdit: canEdit) { text in
+                            DescriptionEditor(text: task.description ?? "", canEdit: store.canEdit) { text in
                                 guard canCommit else { return }
                                 Task { await store.setDescription(text.isEmpty ? nil : text) }
                             }
@@ -71,13 +71,6 @@ struct TaskInspectorView: View {
 
     /// Commits from onDisappear can fire while a workspace switch replaces the scope; by then requests
     /// carry the new workspace's header, so a late save for this task is dropped instead.
-    /// Editable once the detail is in: the detail store fails closed until it has fetched the
-    /// project role, so meanwhile the sidebar's known role decides (no "Read only" flash on select).
-    private var canEdit: Bool {
-        guard let task = store.task else { return false }
-        return store.canEdit || scope.canEdit(task: task.task)
-    }
-
     private var canCommit: Bool {
         guard !session.isSwitching else { return false }
         return session.scope?.id == scope.id
@@ -96,21 +89,21 @@ struct TaskInspectorView: View {
                 .help("Open the parent task")
             }
             HStack {
-                CompleteTaskButton(completed: task.completed, title: task.title, canEdit: canEdit) {
+                CompleteTaskButton(completed: task.completed, title: task.title, canEdit: store.canEdit) {
                     Task { await store.toggleComplete() }
                 }
                 .tint(task.completed ? .green : nil)
                 .buttonStyle(.bordered)
-                .disabled(!canEdit)
+                .disabled(!store.canEdit)
                 Spacer()
-                if loaded, !canEdit {
+                if loaded, !store.canEdit {
                     Label("Read only", systemImage: "lock")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .help("You can comment, but not edit tasks in this project.")
                 }
             }
-            CommitTextField(value: task.title, placeholder: "Task name", font: .title2.weight(.semibold), canEdit: canEdit) { title in
+            CommitTextField(value: task.title, placeholder: "Task name", font: .title2.weight(.semibold), canEdit: store.canEdit) { title in
                 let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return false } // an empty name reverts
                 guard canCommit else { return false } // mid-switch: revert rather than pretend it saved
@@ -125,13 +118,13 @@ struct TaskInspectorView: View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
             GridRow {
                 fieldLabel("Assignee")
-                AssigneeField(scope: scope, assignee: task.assignee, canEdit: canEdit) { user in
+                AssigneeField(scope: scope, assignee: task.assignee, canEdit: store.canEdit) { user in
                     Task { await store.setAssignee(user) }
                 }
             }
             GridRow {
                 fieldLabel("Due date")
-                DueDateField(date: task.dueDate, canEdit: canEdit) { date in
+                DueDateField(date: task.dueDate, canEdit: store.canEdit) { date in
                     Task { await store.setDueDate(date) }
                 }
             }
@@ -147,7 +140,7 @@ struct TaskInspectorView: View {
                 }
                 .labelsHidden()
                 .fixedSize()
-                .disabled(!canEdit)
+                .disabled(!store.canEdit)
             }
             if let project = task.project {
                 GridRow {
