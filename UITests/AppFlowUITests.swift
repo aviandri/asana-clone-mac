@@ -210,7 +210,11 @@ final class AppFlowUITests: XCTestCase {
         let toggle = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Mark ' AND label ENDSWITH ' complete'")).firstMatch
         XCTAssertTrue(toggle.waitForExistence(timeout: 5), "no task to complete")
         toggle.click() // the List updates (row restyled or removed) while the field holds a draft
-        if !waitForFocus(field, timeout: 2) { field.click() }
+        // The completed row lingers ~700 ms, then animates out: let the List settle before touching the
+        // field again (XCUITest hit-tests stale frames mid-animation).
+        _ = XCTWaiter().wait(for: [XCTestExpectation(description: "list settles")], timeout: 1.5)
+        if !waitForFocus(field, timeout: 1) { field.click() }
+        XCTAssertTrue(waitForFocus(field), "add field can't be focused after the list update")
         field.typeText(" rows change\r")
         XCTAssertTrue(waitForFocus(field), "add field didn't keep focus")
         XCTAssertEqual(field.value as? String ?? "", "", "the field clears after adding")
