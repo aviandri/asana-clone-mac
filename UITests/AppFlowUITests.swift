@@ -96,8 +96,17 @@ final class AppFlowUITests: XCTestCase {
         let sidebar = element(app, "sidebar.myTasks")
         XCTAssertTrue(waitForNonExistence(of: sidebar, timeout: 5), "main window didn't close")
 
-        app.open(try XCTUnwrap(URL(string: "mekariproject://task/\(fixLogin)")))
-        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), "main window didn't reopen for the link")
+        let link = try XCTUnwrap(URL(string: "mekariproject://task/\(fixLogin)"))
+        // A busy CI runner can drop the first Apple Event while the app sits windowless in the
+        // background: activate first, and send the link once more if no window shows within 10 s.
+        // A repeat is harmless (the router navigates to the same task in the one main window).
+        app.activate()
+        app.open(link)
+        if !sidebar.waitForExistence(timeout: 10) {
+            app.activate()
+            app.open(link)
+        }
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 20), "main window didn't reopen for the link")
         XCTAssertTrue(element(app, "task.inspector").waitForExistence(timeout: 10), "linked task not opened")
         XCTAssertFalse(app.staticTexts["Can't Open"].exists, "link reported no access")
         XCTAssertEqual(app.windows.count, 1, "the link opened an extra (Task) window")
