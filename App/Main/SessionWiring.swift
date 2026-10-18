@@ -69,6 +69,10 @@ final class SessionWiring {
             router.scopeChanged(to: inputs.scope?.id)
             inputs.scope?.poller.onNew = { [notifier] notices in notifier.post(notices) }
             shownCelebration = inputs.celebrationID
+            // TEMPORARY (device A/B of the completion linger; removed before #25 merges):
+            //   defaults write com.mekari.project debug.completionLingerMs -int 300|400|500
+            let lingerMs = UserDefaults.standard.integer(forKey: "debug.completionLingerMs")
+            if lingerMs > 0 { inputs.scope?.tasks.lingerDuration = .milliseconds(lingerMs) }
         }
 
         // A completion that finished a section, a project or today's list (decided, and gated by the
