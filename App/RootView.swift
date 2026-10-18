@@ -36,6 +36,13 @@ struct RootView: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: session.notice)
+        .overlay(alignment: .topTrailing) {
+            if let opened = router.uiTestOpenedURL {
+                Text(opened)
+                    .font(.caption2)
+                    .accessibilityIdentifier("uitest.openedURL")
+            }
+        }
         .alert("Can't Open", isPresented: Binding(get: { router.alert != nil }, set: { if !$0 { router.alert = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {

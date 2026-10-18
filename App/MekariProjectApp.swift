@@ -20,6 +20,8 @@ struct MekariProjectApp: App {
         _wiring = State(initialValue: SessionWiring(session: session, router: router, notifier: .shared))
         let notifier = LocalNotifier.shared
         notifier.isDisabled = AppBootstrap.isUITest()
+        // UI tests check the link instead of launching a browser on the CI host.
+        if AppBootstrap.isUITest() { OpenInBrowser.open = { router.uiTestOpenedURL = $0.absoluteString } }
         // A banner click opens its task, switching workspace if needed (like a deep link).
         notifier.onOpenTask = { id in Task { await router.follow(.task(id: id), in: session) } }
         // mekariproject:// URLs, also with no window open (AppDelegate's Apple Event handler).

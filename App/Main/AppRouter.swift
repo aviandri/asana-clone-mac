@@ -19,6 +19,8 @@ final class AppRouter {
     /// A link that arrived before the session was signed in (cold launch from a link or a banner);
     /// SessionWiring replays it once signed in.
     private(set) var pendingLink: DeepLink?
+    /// UI tests only: the last URL "Open in Browser" would have opened (shown by RootView).
+    var uiTestOpenedURL: String?
 
     /// Opens the main window (captured from a live view's `openWindow`; see `RootView` / the menu bar).
     @ObservationIgnored var openMainWindow: () -> Void = {}

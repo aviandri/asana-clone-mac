@@ -109,6 +109,32 @@ final class MekariProjectAppTests: XCTestCase {
         XCTAssertEqual(router.selectedTask, "t2")
     }
 
+    /// rc1 QA S1: the ⇧⌘O command path. The focused window's link wins; with no window focused it
+    /// falls back to My Tasks in the current workspace; with no workspace it opens nothing.
+    @MainActor
+    func testOpenInBrowserCommandOpensTheFocusedLinkOrFallsBack() async throws {
+        let original = OpenInBrowser.open
+        defer { OpenInBrowser.open = original }
+        var opened: [URL] = []
+        OpenInBrowser.open = { opened.append($0) }
+
+        let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI"])
+        await session.start()
+        let focused = try XCTUnwrap(BrowserLinks.url(session: session, taskID: nil, projectID: DemoIDs.boardProject))
+        XCTAssertTrue(OpenInBrowser.perform(focused: focused, session: session))
+        XCTAssertTrue(OpenInBrowser.perform(focused: nil, session: session))
+        XCTAssertEqual(opened.count, 2)
+        XCTAssertEqual(opened.first, focused)
+        let fallback = try XCTUnwrap(opened.last?.absoluteString)
+        XCTAssertTrue(fallback.contains("/my-tasks") && fallback.contains("workspace=\(DemoIDs.mekari)"), fallback)
+
+        let signedOut = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI", "-UITestSignedOut"])
+        await signedOut.start()
+        XCTAssertNil(OpenInBrowser.target(focused: nil, session: signedOut), "the menu item is disabled")
+        XCTAssertFalse(OpenInBrowser.perform(focused: nil, session: signedOut))
+        XCTAssertEqual(opened.count, 2)
+    }
+
     /// QA F4: descriptions (and comments) render inline markdown, not literal asterisks.
     func testDescriptionMarkdownRendersInline() {
         let seeded = Formatting.markdown("After signing in, users land on **/** instead of the page they came from.")

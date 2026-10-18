@@ -36,6 +36,7 @@ struct MainView: View {
         }
         .focusedSceneValue(\.selectedTaskID, router.selectedTask)
         .focusedSceneValue(\.currentProjectID, currentProjectID)
+        .focusedSceneValue(\.browserLink, BrowserLinks.url(session: session, taskID: router.selectedTask, projectID: currentProjectID))
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {

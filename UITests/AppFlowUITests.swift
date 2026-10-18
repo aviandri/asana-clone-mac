@@ -87,4 +87,22 @@ final class AppFlowUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Can't Open"].exists, "link reported no access")
         XCTAssertEqual(app.windows.count, 1, "the link opened an extra (Task) window")
     }
+
+    /// rc1 QA S1: ⇧⌘O through the real menu (Commands), for My Tasks and then a selected project.
+    @MainActor
+    func testOpenInBrowserShortcutOpensTheCurrentPage() {
+        let app = launch()
+        let opened = element(app, "uitest.openedURL")
+        app.typeKey("o", modifierFlags: [.command, .shift])
+        XCTAssertTrue(opened.waitForExistence(timeout: 5), "⇧⌘O did nothing")
+        XCTAssertTrue(opened.label.contains("/my-tasks") && opened.label.contains("workspace="), opened.label)
+
+        let project = element(app, "sidebar.project.\(boardProject)")
+        XCTAssertTrue(project.waitForExistence(timeout: 10), "project missing from the sidebar")
+        project.click()
+        app.typeKey("o", modifierFlags: [.command, .shift])
+        let predicate = NSPredicate(format: "label CONTAINS %@", "/projects/\(boardProject)")
+        let projectLink = XCTNSPredicateExpectation(predicate: predicate, object: opened)
+        XCTAssertEqual(XCTWaiter().wait(for: [projectLink], timeout: 5), .completed, opened.label)
+    }
 }

@@ -30,6 +30,7 @@ struct TaskWindowView: View {
                 // ⌘O / ⇧⌘O act on this window's task.
                 .focusedSceneValue(\.selectedTaskID, ref.taskID)
                 .focusedSceneValue(\.currentProjectID, scope.tasks[ref.taskID]?.projectId)
+                .focusedSceneValue(\.browserLink, BrowserLinks.url(session: session, taskID: ref.taskID, projectID: scope.tasks[ref.taskID]?.projectId))
                 .navigationTitle(scope.tasks[ref.taskID]?.title ?? "Task")
             } else if let ref, session.scope != nil {
                 OtherWorkspaceView(session: session, workspaceID: ref.workspaceID)
