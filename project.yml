@@ -64,6 +64,9 @@ targets:
       base:
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.mekari.project.tests
+        # XcodeGen derives the host from the target name; the product is "Mekari Project.app".
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Mekari Project.app/Contents/MacOS/Mekari Project"
+        BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   MekariProjectApp:
     build:
