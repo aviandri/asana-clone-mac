@@ -27,7 +27,6 @@ extension FocusedValues {
 /// Anchor groups only to placements that exist in this app: there are no documents, so there is no
 /// Save group, and `CommandGroup(after: .saveItem)` was silently dropped on macOS 14, taking ⇧⌘O
 /// with it (rc1 QA S1). UI tests assert every item below is in its menu.
-@MainActor
 struct AppCommands: Commands {
     let session: AppSession
     let router: AppRouter

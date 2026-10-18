@@ -110,18 +110,29 @@ final class AppFlowUITests: XCTestCase {
     @MainActor
     func testOpenInBrowserShortcutOpensTheCurrentPage() {
         let app = launch()
-        XCTAssertTrue(app.menuBars.menuBarItems["File"].menuItems["Open in Browser"].exists, "File → Open in Browser missing")
+        let file = app.menuBars.menuBarItems["File"]
+        let item = file.menuItems["Open in Browser"]
+        XCTAssertTrue(item.exists, "File → Open in Browser missing")
+        XCTAssertTrue(item.isEnabled, "File → Open in Browser is disabled")
         let opened = element(app, "uitest.openedURL")
         app.typeKey("o", modifierFlags: [.command, .shift])
-        XCTAssertTrue(opened.waitForExistence(timeout: 5), "⇧⌘O did nothing")
-        XCTAssertTrue(opened.label.contains("/my-tasks") && opened.label.contains("workspace="), opened.label)
+        if !opened.waitForExistence(timeout: 5) {
+            // Tell "the shortcut isn't delivered" apart from "the command does nothing".
+            file.click()
+            item.click()
+            XCTAssertTrue(opened.waitForExistence(timeout: 5), "File → Open in Browser did nothing (clicked)")
+            XCTFail("⇧⌘O did nothing, but clicking the menu item worked")
+        }
+        // A macOS static text carries its string in `value` (its `label` is empty).
+        let url = opened.value as? String ?? ""
+        XCTAssertTrue(url.contains("/my-tasks") && url.contains("workspace="), url)
 
         let project = element(app, "sidebar.project.\(boardProject)")
         XCTAssertTrue(project.waitForExistence(timeout: 10), "project missing from the sidebar")
         project.click()
         app.typeKey("o", modifierFlags: [.command, .shift])
-        let predicate = NSPredicate(format: "label CONTAINS %@", "/projects/\(boardProject)")
+        let predicate = NSPredicate(format: "value CONTAINS %@", "/projects/\(boardProject)")
         let projectLink = XCTNSPredicateExpectation(predicate: predicate, object: opened)
-        XCTAssertEqual(XCTWaiter().wait(for: [projectLink], timeout: 5), .completed, opened.label)
+        XCTAssertEqual(XCTWaiter().wait(for: [projectLink], timeout: 5), .completed, opened.value as? String ?? "")
     }
 }
