@@ -56,19 +56,19 @@ struct ProjectListView: View {
                     }
                     .tag(id)
                     .taskDrag(task, enabled: store.canEdit)
-                    .taskDrop(store: store, section: sectionID, before: id)
+                    .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: id)
                 }
             }
             if store.canEdit {
                 AddTaskRow { title in
                     Task { await store.addTask(title: title, section: sectionID) }
                 }
-                .taskDrop(store: store, section: sectionID, before: nil)
+                .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: nil)
             }
         } header: {
             Text(title)
                 .modifier(SectionRenameModifier(store: store, section: section))
-                .taskDrop(store: store, section: sectionID, before: store.taskIDs(in: sectionID).first)
+                .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: store.taskIDs(in: sectionID).first)
         }
     }
 

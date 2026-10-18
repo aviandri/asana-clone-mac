@@ -13,6 +13,9 @@ final class AppRouter {
     var showSearch = false
     /// "You don't have access" and friends, shown as an alert by the main window.
     var alert: String?
+    /// A link that arrived before the session was signed in (cold launch from a link or a banner);
+    /// SessionWiring replays it once signed in.
+    private(set) var pendingLink: DeepLink?
 
     /// Opens the main window (captured from a live view's `openWindow`; see `RootView` / the menu bar).
     @ObservationIgnored var openMainWindow: () -> Void = {}
@@ -60,13 +63,36 @@ final class AppRouter {
         navigationScopeID = scopeID
     }
 
-    /// Opens a `mekariproject://` link (or a notification's task) in the main window.
+    /// Opens a `mekariproject://` link (or a notification's task) in the main window. Before sign-in
+    /// has finished (restoring, or signed out) the link waits and is replayed afterwards.
     func follow(_ link: DeepLink, in session: AppSession) async {
         openMainWindow()
         NSApp.activate()
+        guard Self.isWellFormed(link) else {
+            alert = "That link isn't a Mekari Project task or project link."
+            return
+        }
+        guard case .signedIn = session.state else {
+            pendingLink = link
+            return
+        }
         let result = await session.resolve(link)
         navigationScopeID = session.scope?.id
         handle(result)
+    }
+
+    /// Called by SessionWiring once signed in.
+    func replayPendingLink(in session: AppSession) async {
+        guard let link = pendingLink else { return }
+        pendingLink = nil
+        await follow(link, in: session)
+    }
+
+    /// Deep-link ids are BE UUIDs; anything else (e.g. `task/..%2Fusers`) never reaches a request path.
+    static func isWellFormed(_ link: DeepLink) -> Bool {
+        switch link {
+        case .task(let id), .project(let id): UUID(uuidString: id) != nil
+        }
     }
 }
 
@@ -86,12 +112,24 @@ enum BrowserLinks {
     @MainActor
     static func url(session: AppSession, taskID: String?, projectID: String?) -> URL? {
         guard let server = session.settings.serverURL, let scope = session.scope else { return nil }
-        if let taskID, let task = scope.tasks[taskID] {
-            return WebLinks.task(task, server: server, workspace: scope.id)
+        if let taskID {
+            if let task = scope.tasks[taskID] {
+                return WebLinks.task(task, server: server, workspace: scope.id)
+            }
+            // Not cached (e.g. a task window opened from a link): the id alone is enough for the web.
+            let base = projectID.map { WebLinks.project($0, server: server, workspace: scope.id) }
+                ?? WebLinks.url(server, path: "/my-tasks", workspace: scope.id)
+            return adding(task: taskID, to: base)
         }
         if let projectID {
             return WebLinks.project(projectID, server: server, workspace: scope.id)
         }
         return session.webURL(path: "/my-tasks")
+    }
+
+    private static func adding(task id: String, to url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        components.queryItems = [URLQueryItem(name: "task", value: id)] + (components.queryItems ?? [])
+        return components.url ?? url
     }
 }

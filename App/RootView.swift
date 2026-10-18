@@ -46,15 +46,6 @@ struct RootView: View {
             Text(router.alert ?? "")
         }
         .onAppear { router.openMainWindow = { openWindow(id: WindowID.main) } }
-        // Each workspace scope: start on My Tasks, and turn new inbox items into banners.
-        .onChange(of: session.scope?.id, initial: true) { _, new in
-            router.scopeChanged(to: new)
-            session.scope?.poller.onNew = { notices in LocalNotifier.shared.post(notices) }
-        }
-        // Ask for notification permission on the first sign-in (once per install).
-        .onChange(of: session.me?.id) { _, id in
-            if id != nil { LocalNotifier.shared.requestPermissionIfNeeded() }
-        }
         .task(id: session.notice) {
             guard let notice = session.notice else { return }
             // VoiceOver users hear the toast too.

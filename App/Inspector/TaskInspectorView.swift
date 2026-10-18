@@ -90,7 +90,7 @@ struct TaskInspectorView: View {
             CommitTextField(value: task.title, placeholder: "Task name", font: .title2.weight(.semibold), canEdit: store.canEdit) { title in
                 let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { return false } // an empty name reverts
-                guard canCommit else { return true }
+                guard canCommit else { return false } // mid-switch: revert rather than pretend it saved
                 Task { await store.setTitle(trimmed) }
                 return true
             }

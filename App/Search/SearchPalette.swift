@@ -23,7 +23,8 @@ struct SearchPalette: View {
                     .font(.title3)
                     .focused($fieldFocused)
                     .accessibilityIdentifier("search.field")
-                    .onSubmit { open(items, at: selected) }
+                    // Return during the debounce would open a result for the previous query.
+                    .onSubmit { if !search.isSearching { open(items, at: selected) } }
                     .onKeyPress(.downArrow) { move(+1, count: items.count) }
                     .onKeyPress(.upArrow) { move(-1, count: items.count) }
                 if search.isSearching { ProgressView().controlSize(.small) }
@@ -34,6 +35,9 @@ struct SearchPalette: View {
                 .frame(minHeight: 120, maxHeight: 380)
         }
         .frame(width: 560)
+        // Fallback if the text field's editor doesn't pass the arrows to the handlers above.
+        .onKeyPress(.downArrow) { move(+1, count: items.count) }
+        .onKeyPress(.upArrow) { move(-1, count: items.count) }
         .onAppear {
             fieldFocused = true
             selected = 0
@@ -71,6 +75,7 @@ struct SearchPalette: View {
                             .buttonStyle(.plain)
                             .id(item.id)
                             .accessibilityIdentifier(item.accessibilityID)
+                            .accessibilityAddTraits(index == selected ? .isSelected : [])
                         }
                     }
                     .padding(.bottom, 8)

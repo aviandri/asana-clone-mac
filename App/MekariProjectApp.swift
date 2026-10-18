@@ -7,6 +7,7 @@ struct MekariProjectApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var session: AppSession
     @State private var router: AppRouter
+    @State private var wiring: SessionWiring
     @AppStorage(SettingsKey.showInMenuBar) private var showInMenuBar = true
 
     init() {
@@ -14,6 +15,8 @@ struct MekariProjectApp: App {
         let router = AppRouter()
         _session = State(initialValue: session)
         _router = State(initialValue: router)
+        // Session-driven wiring at App level: works with only the menu bar open, too.
+        _wiring = State(initialValue: SessionWiring(session: session, router: router))
         let notifier = LocalNotifier.shared
         notifier.isDisabled = AppBootstrap.isUITest()
         // A banner click opens its task, switching workspace if needed (like a deep link).
@@ -27,6 +30,8 @@ struct MekariProjectApp: App {
         Window("Mekari Project", id: WindowID.main) {
             RootView(session: session, router: router)
         }
+        // mekariproject:// links always go to the main window (opening it if closed), never a Task window.
+        .handlesExternalEvents(matching: [DeepLink.scheme])
         .defaultSize(width: 1120, height: 720)
         .commands { AppCommands(session: session, router: router) }
 
@@ -34,6 +39,7 @@ struct MekariProjectApp: App {
         WindowGroup("Task", id: WindowID.task, for: TaskWindowRef.self) { $ref in
             TaskWindowView(session: session, ref: $ref)
         }
+        .handlesExternalEvents(matching: [])
         .defaultSize(width: 520, height: 700)
 
         // Unread count, due today / overdue, quick add (SPEC-MAC §5). "Show in menu bar" in Settings.

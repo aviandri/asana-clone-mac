@@ -134,4 +134,115 @@ final class MekariProjectAppTests: XCTestCase {
         XCTAssertEqual(items.first?.kind, .person(email: "alice@example.com"))
         XCTAssertTrue(PaletteItem.items(from: nil).isEmpty)
     }
+
+    // MARK: #8 review: links before sign-in, drop guard, cache-miss links
+
+    /// A notifier that never prompts or posts (no permission dialogs on the CI host).
+    @MainActor
+    private static func quietNotifier() -> LocalNotifier {
+        let notifier = LocalNotifier()
+        notifier.isDisabled = true
+        return notifier
+    }
+
+    /// Polls `condition` on the main actor (SessionWiring reacts asynchronously).
+    @MainActor
+    private func eventually(timeout: Duration = .seconds(3), _ condition: () -> Bool) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        return condition()
+    }
+
+    @MainActor
+    func testColdLaunchLinkWaitsForSignInInsteadOfNoAccess() async {
+        let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI"])
+        let router = AppRouter()
+        let wiring = SessionWiring(session: session, router: router, notifier: Self.quietNotifier())
+        XCTAssertEqual(session.state, .restoring)
+
+        await router.follow(.task(id: DemoIDs.taskWithStories), in: session)
+        XCTAssertNil(router.alert, "a link during restoring must wait, not report no access")
+        XCTAssertEqual(router.pendingLink, .task(id: DemoIDs.taskWithStories))
+
+        await session.start()
+        let opened = await eventually { router.selectedTask == DemoIDs.taskWithStories }
+        XCTAssertTrue(opened, "pending link not replayed after sign-in")
+        XCTAssertEqual(router.item, .project(DemoIDs.boardProject))
+        XCTAssertNil(router.alert)
+        XCTAssertNil(router.pendingLink)
+        _ = wiring
+    }
+
+    @MainActor
+    func testLinkWhileSignedOutOpensAfterSigningIn() async {
+        let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI", "-UITestSignedOut"])
+        let router = AppRouter()
+        let wiring = SessionWiring(session: session, router: router, notifier: Self.quietNotifier())
+        await session.start()
+        XCTAssertEqual(session.state, .signedOut)
+
+        await router.follow(.project(id: DemoIDs.boardProject), in: session)
+        XCTAssertNotNil(router.pendingLink)
+        await session.signIn(server: "https://demo.invalid", email: "alice@example.com", password: DemoIDs.password)
+        let opened = await eventually { router.item == .project(DemoIDs.boardProject) }
+        XCTAssertTrue(opened, "pending link not replayed after signing in")
+        XCTAssertNil(router.alert)
+        _ = wiring
+    }
+
+    @MainActor
+    func testDeepLinkSwitchKeepsItsTargetThroughSessionWiring() async {
+        let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI"])
+        let router = AppRouter()
+        let wiring = SessionWiring(session: session, router: router, notifier: Self.quietNotifier())
+        await session.start()
+        XCTAssertEqual(session.current?.id, DemoIDs.mekari)
+
+        await router.follow(.project(id: DemoIDs.pilotProject), in: session)
+        // Let SessionWiring see the new scope (its reset must not undo the link's navigation).
+        _ = await eventually(timeout: .milliseconds(300)) { false }
+        XCTAssertEqual(session.current?.id, DemoIDs.acmePilot)
+        XCTAssertEqual(router.item, .project(DemoIDs.pilotProject))
+        _ = wiring
+    }
+
+    @MainActor
+    func testMalformedLinkIdsNeverReachTheAPI() async {
+        let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI"])
+        await session.start()
+        let router = AppRouter()
+        await router.follow(.task(id: "..%2Fusers"), in: session)
+        XCTAssertNotNil(router.alert)
+        XCTAssertNil(router.pendingLink)
+        XCTAssertNil(router.selectedTask)
+    }
+
+    func testDropsOnlyMoveThisProjectsTasksForEditors() {
+        let creator = UserSummary(id: "u1", name: "Ann", email: "ann@example.com", avatarColor: "#123456")
+        func task(_ id: String, project: String?) -> TaskItem {
+            TaskItem(id: id, workspaceId: "w", projectId: project, title: id, creator: creator, createdAt: Date(), updatedAt: Date())
+        }
+        XCTAssertTrue(DropRules.accepts(task("t1", project: "p1"), projectID: "p1", canEdit: true, before: "t2"))
+        XCTAssertTrue(DropRules.accepts(task("t1", project: "p1"), projectID: "p1", canEdit: true, before: nil))
+        XCTAssertFalse(DropRules.accepts(nil, projectID: "p1", canEdit: true, before: nil), "unknown string (e.g. text from another app)")
+        XCTAssertFalse(DropRules.accepts(task("t1", project: "p2"), projectID: "p1", canEdit: true, before: nil), "another project's task")
+        XCTAssertFalse(DropRules.accepts(task("t1", project: nil), projectID: "p1", canEdit: true, before: nil), "a personal task")
+        XCTAssertFalse(DropRules.accepts(task("t1", project: "p1"), projectID: "p1", canEdit: false, before: nil), "read-only")
+        XCTAssertFalse(DropRules.accepts(task("t1", project: "p1"), projectID: "p1", canEdit: true, before: "t1"), "onto itself")
+    }
+
+    @MainActor
+    func testOpenInBrowserWithoutACachedTaskUsesTheId() async throws {
+        let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI"])
+        await session.start()
+        let missing = "50000000-0000-4000-8000-0000000000ff"
+        let url = try XCTUnwrap(BrowserLinks.url(session: session, taskID: missing, projectID: DemoIDs.boardProject)?.absoluteString)
+        XCTAssertTrue(url.contains("/projects/\(DemoIDs.boardProject)") && url.contains("task=\(missing)") && url.contains("workspace=\(DemoIDs.mekari)"), url)
+        let personal = try XCTUnwrap(BrowserLinks.url(session: session, taskID: missing, projectID: nil)?.absoluteString)
+        XCTAssertTrue(personal.contains("/my-tasks") && personal.contains("task=\(missing)"), personal)
+    }
 }

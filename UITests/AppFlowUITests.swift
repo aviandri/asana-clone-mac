@@ -50,4 +50,35 @@ final class AppFlowUITests: XCTestCase {
         // The palette's own result row (the same title is also in My Tasks behind the sheet).
         XCTAssertTrue(element(app, "search.result.task.\(fixLogin)").waitForExistence(timeout: 10), "no search result in the palette")
     }
+
+    @MainActor
+    func testPaletteArrowKeysMoveTheSelection() {
+        let app = launch()
+        app.typeKey("k", modifierFlags: .command)
+        let field = element(app, "search.field")
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.typeText("mode") // "Offline mode for task list", "Dark mode QA pass"
+        let results = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH 'search.result.task.'"))
+        XCTAssertTrue(results.element(boundBy: 1).waitForExistence(timeout: 10), "expected two task results")
+        XCTAssertTrue(results.element(boundBy: 0).isSelected, "first result starts selected")
+        app.typeKey(.downArrow, modifierFlags: [])
+        XCTAssertTrue(results.element(boundBy: 1).isSelected, "↓ didn't move the selection")
+        XCTAssertFalse(results.element(boundBy: 0).isSelected)
+    }
+
+    /// The URL scheme path with the main window closed: SwiftUI must route it to the main Window
+    /// (handlesExternalEvents), not an empty Task window, and open the task there.
+    @MainActor
+    func testDeepLinkWithTheMainWindowClosedOpensTheTask() throws {
+        let app = launch()
+        app.typeKey("w", modifierFlags: .command) // close the main window; the menu bar keeps the app alive
+        let sidebar = element(app, "sidebar.myTasks")
+        XCTAssertTrue(sidebar.waitForNonExistence(timeout: 5), "main window didn't close")
+
+        app.open(try XCTUnwrap(URL(string: "mekariproject://task/\(fixLogin)")))
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 10), "main window didn't reopen for the link")
+        XCTAssertTrue(element(app, "task.inspector").waitForExistence(timeout: 10), "linked task not opened")
+        XCTAssertFalse(app.staticTexts["Can't Open"].exists, "link reported no access")
+        XCTAssertEqual(app.windows.count, 1, "the link opened an extra (Task) window")
+    }
 }

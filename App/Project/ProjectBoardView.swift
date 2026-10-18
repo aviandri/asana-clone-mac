@@ -53,7 +53,7 @@ private struct BoardColumn: View {
                             }
                             .onTapGesture { selection = id }
                             .taskDrag(task, enabled: store.canEdit)
-                            .taskDrop(store: store, section: sectionID, before: id)
+                            .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: id)
                         }
                     }
                     if store.canEdit {
@@ -62,12 +62,8 @@ private struct BoardColumn: View {
                         }
                         .padding(8)
                         .background(RoundedRectangle(cornerRadius: 8).fill(.background.opacity(0.6)))
+                        .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: nil, isTargeted: $targeted)
                     }
-                    // The rest of the column: drop at the end.
-                    Color.clear
-                        .frame(maxWidth: .infinity, minHeight: 60)
-                        .contentShape(Rectangle())
-                        .taskDrop(store: store, section: sectionID, before: nil, isTargeted: $targeted)
                 }
             }
         }
@@ -79,6 +75,10 @@ private struct BoardColumn: View {
                 .fill(Color(nsColor: .windowBackgroundColor))
                 .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(targeted ? Color.accentColor : Color.clear, lineWidth: 2))
         )
+        // Anywhere else in the column (header, blank space below the cards): drop at the end.
+        // Cards and "Add task" are inner drop targets and win where they are.
+        .contentShape(Rectangle())
+        .taskDrop(store: store, tasks: scope.tasks, section: sectionID, before: nil, isTargeted: $targeted)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title), \(ids.count) tasks")
     }

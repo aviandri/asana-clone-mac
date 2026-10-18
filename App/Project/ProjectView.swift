@@ -108,15 +108,27 @@ extension View {
         modifier(TaskDragModifier(taskID: task.id, title: task.title, enabled: enabled))
     }
 
-    /// Drop a dragged task here: into `section`, before `before` (nil = at the end).
-    func taskDrop(store: ProjectStore, section: String?, before: String?, isTargeted: Binding<Bool>? = nil) -> some View {
+    /// Drop a dragged task here: into `section`, before `before` (nil = at the end). Only tasks of this
+    /// project are accepted (`DropRules`); other strings and other projects' tasks are refused.
+    func taskDrop(store: ProjectStore, tasks: TaskCache, section: String?, before: String?, isTargeted: Binding<Bool>? = nil) -> some View {
         dropDestination(for: String.self) { ids, _ in
-            guard store.canEdit, let id = ids.first, id != before else { return false }
+            guard let id = ids.first, DropRules.accepts(tasks[id], projectID: store.projectID, canEdit: store.canEdit, before: before) else {
+                return false
+            }
             Task { await store.move(taskID: id, toSection: section, before: before) }
             return true
         } isTargeted: { targeted in
             isTargeted?.wrappedValue = targeted
         }
+    }
+}
+
+/// Which drops are moves. Drag payloads are plain strings, so text from other apps or a task from
+/// another project's window could land here; only this project's tasks move, and only for editors.
+enum DropRules {
+    static func accepts(_ task: TaskItem?, projectID: String, canEdit: Bool, before: String?) -> Bool {
+        guard canEdit, let task, task.projectId == projectID, task.id != before else { return false }
+        return true
     }
 }
 
