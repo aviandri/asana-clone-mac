@@ -95,6 +95,9 @@ public final class AppSession {
   public private(set) var generation = 0
   /// A short message for a toast, e.g. "Switched to Acme Pilot".
   public private(set) var notice: String?
+  /// True from the moment a workspace switch (or lost-access recovery) is queued until the last
+  /// queued one commits or fails: show progress, hold off edits.
+  public private(set) var isSwitching = false
   public let settings: ServerSettings
 
   @ObservationIgnored private let tokens: TokenStore
@@ -106,6 +109,11 @@ public final class AppSession {
   @ObservationIgnored private var eventLoop: Task<Void, Never>?
   @ObservationIgnored private var switchRequest = 0
   @ObservationIgnored private var switchQueue: Task<Void, Never>?
+  /// Jobs queued and not finished, and jobs skipped as superseded (tests pin the queue with these).
+  @ObservationIgnored private(set) var queuedJobs = 0 {
+    didSet { if isSwitching != (queuedJobs > 0) { isSwitching = queuedJobs > 0 } }
+  }
+  @ObservationIgnored private(set) var skippedJobs = 0
   /// The workspace the server will open next (its `lastWorkspaceId`), as far as we know.
   @ObservationIgnored private var serverWorkspaceID: String?
 
@@ -256,9 +264,15 @@ public final class AppSession {
     if supersedes { switchRequest += 1 }
     let request = switchRequest
     let previous = switchQueue
+    queuedJobs += 1
     let task = Task { @MainActor [weak self] in
       await previous?.value
-      guard let self, request == self.switchRequest else { return }
+      guard let self else { return }
+      defer { self.queuedJobs -= 1 }
+      guard request == self.switchRequest else {
+        self.skippedJobs += 1
+        return
+      }
       await job(self, request)
     }
     switchQueue = task
@@ -284,18 +298,25 @@ public final class AppSession {
     }
   }
 
-  /// Lost access: adopt the workspace `/auth/me` (sent without a header) gives us.
+  /// Lost access: adopt the workspace `/auth/me` gives us (it never carries the header).
+  ///
+  /// The header is never cleared here: until `adopt` swaps header and scope together, both still
+  /// name the lost workspace, so requests fail (404) instead of silently falling back server-side to
+  /// another workspace's data under this one's label. On failure the notice stays up and the next
+  /// scoped request (e.g. window focus) 404s again and retries.
   private func recoverLostAccess(from workspaceID: String, request: Int) async {
     guard let api, workspaceID == current?.id else { return }
-    let lostName = current?.name
-    await api.setWorkspace(nil)
+    let lostName = current?.name ?? "this workspace"
     do {
       let me = try await api.me()
       guard request == switchRequest else { return }
       await adopt(me, api: api)
-      if let lostName { notice = "You no longer have access to \(lostName)" }
+      notice = "You no longer have access to \(lostName)"
+    } catch is CancellationError {
     } catch {
-      // A 401 here arrives as its own event; a newer job sets the header again.
+      guard request == switchRequest, current?.id == workspaceID else { return }
+      // 401s arrive as their own event and sign out.
+      notice = "You no longer have access to \(lostName). Couldn't load your other workspaces; retrying when you come back."
     }
   }
 

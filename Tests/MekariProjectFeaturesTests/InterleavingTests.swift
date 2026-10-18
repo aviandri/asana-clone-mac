@@ -250,10 +250,17 @@ final class SmallReviewFixTests: XCTestCase {
     await waitUntil("first reload in flight") { await fake.parkedCount(.myTasks) == 1 }
     store.showCompleted = false
     await waitUntil("second reload in flight") { await fake.parkedCount(.myTasks) == 2 }
-    await fake.release(.myTasks, all: true)
-    await waitUntil("reloads finish") { await fake.parkedCount(.myTasks) == 0 }
+    // The second (incl. completed = false) answers first; the first's later answer must not win.
+    let first = store.loadedTaskIDs
+    await fake.release(.myTasks, newest: true)
+    await waitUntil("second applied") { await fake.parkedCount(.myTasks) == 1 }
     await settle()
-    XCTAssertFalse(store.groups.contains { $0.bucket == .completed })
+    await fake.release(.myTasks, all: true)
+    await settle()
+    let completedIDs = await fake.currentTasks().filter { $0.completed && $0.assignee?.id == DemoIDs.alice }.map(\.id)
+    XCTAssertFalse(completedIDs.isEmpty)
+    XCTAssertTrue(Set(store.loadedTaskIDs).isDisjoint(with: completedIDs), "the stale include-completed load was dropped")
+    XCTAssertEqual(Set(store.loadedTaskIDs), Set(first))
     XCTAssertNil(store.lastError)
   }
 
@@ -286,3 +293,67 @@ final class SmallReviewFixTests: XCTestCase {
     XCTAssertEqual(search.results?.tasks.map(\.title), ["Fix login redirect"])
   }
 }
+
+final class ReReviewTests: XCTestCase {
+  @MainActor
+  func testCanEditIsFalseUntilTheProjectRoleIsKnown() async {
+    let fake = demoFake()
+    let store = TaskDetailStore(api: fake, tasks: TaskCache(api: fake), taskID: DemoIDs.taskWithStories, me: alice,
+                                workspaceRole: .member)
+    await fake.hold(.project)
+    async let load: Void = store.load()
+    await waitUntil("role lookup in flight") { await fake.parkedCount(.project) == 1 }
+    XCTAssertFalse(store.canEdit, "no editable flash before the role is known")
+    await fake.release(.project, all: true)
+    await load
+    XCTAssertTrue(store.canEdit)
+  }
+
+  @MainActor
+  func testDeletedTasksStayDeletedWhenAnOlderListArrives() async throws {
+    let fake = demoFake()
+    await fake.setWorkspace(DemoIDs.mekari)
+    let cache = TaskCache(api: fake)
+    let list = try await fake.projectTasks(DemoIDs.boardProject, completed: nil)
+    cache.upsert(list)
+    let id = list[0].id
+    cache.remove(id)
+    cache.upsert(list)                                   // a slow load from before the delete
+    XCTAssertNil(cache[id])
+  }
+
+  @MainActor
+  func crowdedStore(_ fake: FakeMekariAPI) async throws -> (ProjectStore, TaskCache, [String]) {
+    let cache = TaskCache(api: fake)
+    let store = ProjectStore(api: fake, tasks: cache, projectID: DemoIDs.boardProject, workspaceRole: .member)
+    await store.load()
+    let todo = store.taskIDs(in: store.sections[0].id)
+    try await cache.update(todo[0], TaskChanges(position: 1))
+    try await cache.update(todo[1], TaskChanges(position: 1 + 1e-7))
+    return (store, cache, todo)
+  }
+
+  @MainActor
+  func testAFailedRenumberPatchIsRetriedOnce() async throws {
+    let fake = demoFake()
+    let (store, cache, todo) = try await crowdedStore(fake)
+    await fake.failNext(.updateTask, with: .transport()) // the first PATCH of the renumber fails once
+    await store.move(taskID: todo[3], toSection: store.sections[0].id, before: todo[1])
+    XCTAssertNil(store.lastError)
+    XCTAssertEqual(store.taskIDs(in: store.sections[0].id), [todo[0], todo[3], todo[1], todo[2]])
+    XCTAssertEqual(store.taskIDs(in: store.sections[0].id).compactMap { cache[$0]?.position }, [1000, 2000, 3000, 4000])
+  }
+
+  @MainActor
+  func testARenumberThatStillFailsReloadsAndSaysSo() async throws {
+    let fake = demoFake()
+    let (store, _, todo) = try await crowdedStore(fake)
+    await fake.failNext(.updateTask, with: .transport(), times: 100) // every PATCH fails, retries too
+    await store.move(taskID: todo[3], toSection: store.sections[0].id, before: todo[1])
+    XCTAssertEqual(store.lastError?.message, "Couldn't reorder; try again")
+    let server = try await fake.projectTasks(DemoIDs.boardProject, completed: nil)
+      .filter { $0.sectionId == store.sections[0].id }.sorted { $0.position < $1.position }.map(\.id)
+    XCTAssertEqual(store.taskIDs(in: store.sections[0].id), server, "the screen shows the server's order")
+  }
+}
+

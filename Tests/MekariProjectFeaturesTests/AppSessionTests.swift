@@ -116,12 +116,16 @@ final class AppSessionTests: XCTestCase {
     await waitUntil("the first POST is in flight") { await fake.parkedCount(.switchWorkspace) == 1 }
     async let second: Void = session.switchWorkspace(to: DemoIDs.acmePilot) // queued behind the first…
     async let third: Void = session.switchWorkspace(to: DemoIDs.mekari)     // …and superseded by this one
+    await waitUntil("all three queued") { session.queuedJobs == 3 }
+    XCTAssertTrue(session.isSwitching)
     await fake.release(.switchWorkspace, all: true)
     _ = await (first, second, third)
 
     XCTAssertEqual(session.current?.id, DemoIDs.mekari)
+    XCTAssertEqual(session.skippedJobs, 1) // the second never started
     let posts = await fake.calls.filter { $0.endpoint == .switchWorkspace }.count
     XCTAssertEqual(posts, 2) // first and third; the second was skipped before its POST
+    XCTAssertFalse(session.isSwitching)
   }
 
   @MainActor
@@ -159,6 +163,72 @@ final class AppSessionTests: XCTestCase {
     XCTAssertEqual(session.current?.id, DemoIDs.mekari)
     XCTAssertEqual(session.all.map(\.name), ["Mekari"])
     XCTAssertEqual(session.notice, "You no longer have access to Acme Pilot")
+  }
+
+  @MainActor
+  func testIsSwitchingCoversQueuedSwitchesAndFailures() async {
+    let fake = demoFake()
+    let session = await signedInSession(fake)
+    XCTAssertFalse(session.isSwitching)
+    await fake.hold(.switchWorkspace)
+    async let switching: Void = session.switchWorkspace(to: DemoIDs.acmePilot)
+    await waitUntil("switch in flight") { await fake.parkedCount(.switchWorkspace) == 1 }
+    XCTAssertTrue(session.isSwitching)
+    await fake.failNext(.switchWorkspace, with: .transport())
+    await fake.release(.switchWorkspace, all: true)
+    await switching
+    XCTAssertFalse(session.isSwitching)
+    XCTAssertEqual(session.current?.id, DemoIDs.mekari)
+    XCTAssertEqual(session.notice, "Can't reach the server")
+  }
+
+  /// MUST (re-review): after a failed recovery, header and scope still agree (both the lost
+  /// workspace), so nothing from another workspace shows under its label; the next focus retries.
+  @MainActor
+  func testAFailedRecoveryKeepsHeaderAndScopeTogetherAndRetries() async {
+    let fake = demoFake()
+    let session = await signedInSession(fake)
+    await session.switchWorkspace(to: DemoIDs.acmePilot)
+    await fake.removeMembership(userID: DemoIDs.alice, workspaceID: DemoIDs.acmePilot)
+    await fake.failNext(.me, with: .transport())
+    await session.scope?.myTasks.refresh()          // 404 → recovery → /auth/me fails
+    await waitUntil("recovery ran") { session.queuedJobs == 0 && session.notice?.contains("retrying") == true }
+
+    XCTAssertEqual(session.current?.id, DemoIDs.acmePilot)
+    await session.scope?.sidebar.load()
+    let lastScoped = await fake.calls.last { $0.endpoint == .projects }
+    XCTAssertEqual(lastScoped?.workspaceID, DemoIDs.acmePilot, "the header still names the scope's workspace")
+    XCTAssertTrue(session.scope?.sidebar.projects.isEmpty ?? false, "no other workspace's data under this label")
+
+    await session.scope?.refresh()                   // window focus: 404 again → recovery succeeds
+    await waitUntil("recovered") { session.current?.id == DemoIDs.mekari }
+    XCTAssertEqual(session.notice, "You no longer have access to Acme Pilot")
+  }
+
+  @MainActor
+  func testARecoverySupersededByAFailingSwitchStillKeepsHeaderAndScopeTogether() async {
+    let fake = demoFake()
+    let session = await signedInSession(fake)
+    await session.switchWorkspace(to: DemoIDs.acmePilot)
+    await fake.removeMembership(userID: DemoIDs.alice, workspaceID: DemoIDs.acmePilot)
+    await fake.hold(.me)
+    await session.scope?.myTasks.refresh()          // recovery starts, /auth/me parked
+    await waitUntil("recovery in flight") { await fake.parkedCount(.me) == 1 }
+    await fake.failNext(.switchWorkspace, with: .transport())
+    async let userSwitch: Void = session.switchWorkspace(to: DemoIDs.mekari) // supersedes, then fails
+    await waitUntil("switch queued") { session.queuedJobs == 2 }
+    await fake.release(.me, all: true)
+    await userSwitch
+    await waitUntil("queue drained") { session.queuedJobs == 0 }
+
+    XCTAssertEqual(session.current?.id, DemoIDs.acmePilot) // nothing committed
+    XCTAssertFalse(session.isSwitching)
+    // The next scoped request (focus) still carries the lost workspace's header: it 404s, which
+    // queues a fresh recovery, and that one succeeds.
+    await session.scope?.sidebar.load()
+    let lastScoped = await fake.calls.last { $0.endpoint == .projects }
+    XCTAssertEqual(lastScoped?.workspaceID, DemoIDs.acmePilot)
+    await waitUntil("recovered") { session.current?.id == DemoIDs.mekari }
   }
 
   @MainActor
