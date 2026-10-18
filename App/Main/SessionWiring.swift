@@ -22,32 +22,53 @@ final class SessionWiring {
         observe()
     }
 
+    /// What the wiring reacts to, read inside the tracking scope.
+    private struct Inputs {
+        let generation: Int
+        let scope: WorkspaceScope?
+        let signedIn: Bool
+        let hasPendingLink: Bool
+        let isSwitching: Bool
+    }
+
     private func observe() {
-        withObservationTracking {
-            apply()
+        // Only reads happen inside the tracking scope. The reactions run after it: they write to the
+        // router and poller, and must never run (or spin anything) while an access list is active.
+        let inputs = withObservationTracking {
+            read()
         } onChange: { [weak self] in
             // Fires once, before the change lands; re-read and re-arm on the main actor.
             Task { @MainActor [weak self] in self?.observe() }
         }
+        react(to: inputs)
     }
 
-    /// Reads (and so tracks) state, generation, scope and the pending link, then reacts.
-    func apply() {
-        let generation = session.generation
-        let scope = session.scope
-        let scopeObject = scope.map(ObjectIdentifier.init)
+    private func read() -> Inputs {
+        let signedIn: Bool
+        if case .signedIn = session.state { signedIn = true } else { signedIn = false }
+        return Inputs(
+            generation: session.generation,
+            scope: session.scope,
+            signedIn: signedIn,
+            hasPendingLink: router.pendingLink != nil,
+            isSwitching: session.isSwitching
+        )
+    }
+
+    private func react(to inputs: Inputs) {
+        let scopeObject = inputs.scope.map(ObjectIdentifier.init)
 
         // A new scope object (switch, lost-access recovery, sign-in), even with the same workspace id.
-        if scopeObject != wiredScope || generation != wiredGeneration {
+        if scopeObject != wiredScope || inputs.generation != wiredGeneration {
             wiredScope = scopeObject
-            wiredGeneration = generation
-            router.scopeChanged(to: scope?.id)
-            scope?.poller.onNew = { [notifier] notices in notifier.post(notices) }
+            wiredGeneration = inputs.generation
+            router.scopeChanged(to: inputs.scope?.id)
+            inputs.scope?.poller.onNew = { [notifier] notices in notifier.post(notices) }
         }
 
-        guard case .signedIn = session.state else { return }
+        guard inputs.signedIn else { return }
         notifier.requestPermissionIfNeeded()
-        if router.pendingLink != nil, !replaying, !session.isSwitching {
+        if inputs.hasPendingLink, !replaying, !inputs.isSwitching {
             replaying = true
             Task { @MainActor in
                 await router.replayPendingLink(in: session)
