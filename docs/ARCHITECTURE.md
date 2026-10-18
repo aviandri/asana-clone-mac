@@ -637,7 +637,9 @@ public func submit() async                           // personal task assigned t
      still name the lost workspace, so requests 404 instead of showing another workspace's data under
      its label. If recovery fails, the notice stays and the next scoped request (focus) retries.
    - `AppSession.isSwitching` is true while any switch or recovery is queued or running.
-   - `TaskDetailStore.canEdit` is false until the project role is known.
+   - `TaskDetailStore.canEdit` is false until the project role is known. It's known at once when the scope
+     already knows the project (the sidebar's `myRole`, via `knownProject`), and its own fetch
+     overrides that; if the fetch fails, it falls back to the scope's role (0.1.1).
    - `TaskCache.remove` leaves a tombstone, so later copies never bring a deleted task back.
    - Renumbering: every PATCH is tried, the failed ones are retried once, and if any still fail the
      project reloads and `lastError` says "Couldn't reorder; try again".
