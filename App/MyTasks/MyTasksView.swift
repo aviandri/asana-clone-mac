@@ -32,7 +32,7 @@ struct MyTasksView: View {
                 Section(group.title) {
                     ForEach(group.taskIDs, id: \.self) { id in
                         if let task = scope.tasks[id] {
-                            TaskRow(task: task, showProject: true, canEdit: canEdit(task)) {
+                            TaskRow(task: task, showProject: true, canEdit: scope.canEdit(task: task)) {
                                 Task { await store.toggleComplete(id) }
                             }
                             .tag(id)
@@ -48,7 +48,7 @@ struct MyTasksView: View {
                 Button(scope.tasks[id]?.completed == true ? "Mark Incomplete" : "Mark Complete") {
                     Task { await store.toggleComplete(id) }
                 }
-                .disabled(!(scope.tasks[id].map(canEdit) ?? false))
+                .disabled(!(scope.tasks[id].map { scope.canEdit(task: $0) } ?? false))
             }
         } primaryAction: { ids in
             if let id = ids.first { openTaskWindow(id) }
@@ -80,15 +80,6 @@ struct MyTasksView: View {
             }
         }
         .task { await store.refresh() }
-    }
-
-    /// Personal tasks and workspace admins: yes. Project tasks: the project role from the sidebar's
-    /// project list, not COMMENTER; unknown project → read-only (fail closed, like TaskDetailStore).
-    private func canEdit(_ task: TaskItem) -> Bool {
-        guard let projectID = task.projectId else { return true }
-        if scope.workspace.isAdmin { return true }
-        guard let project = scope.sidebar.projects.first(where: { $0.id == projectID }) else { return false }
-        return project.myRole != .commenter
     }
 
     private func openTaskWindow(_ id: String) {
