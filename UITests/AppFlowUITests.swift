@@ -47,8 +47,7 @@ final class AppFlowUITests: XCTestCase {
         let field = element(app, "search.field")
         XCTAssertTrue(field.waitForExistence(timeout: 5), "search palette didn't open")
         field.typeText("login")
-        // Look inside the palette sheet: the same title is also in My Tasks behind it.
-        let palette = app.sheets.firstMatch
-        XCTAssertTrue(palette.staticTexts["Fix login redirect"].firstMatch.waitForExistence(timeout: 10), "no search result in the palette")
+        // The palette's own result row (the same title is also in My Tasks behind the sheet).
+        XCTAssertTrue(element(app, "search.result.task.\(fixLogin)").waitForExistence(timeout: 10), "no search result in the palette")
     }
 }

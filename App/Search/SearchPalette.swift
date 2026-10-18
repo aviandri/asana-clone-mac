@@ -70,6 +70,7 @@ struct SearchPalette: View {
                             }
                             .buttonStyle(.plain)
                             .id(item.id)
+                            .accessibilityIdentifier(item.accessibilityID)
                         }
                     }
                     .padding(.bottom, 8)
@@ -122,6 +123,15 @@ struct PaletteItem: Identifiable, Equatable {
     let subtitle: String?
     let color: String?
     let user: UserSummary?
+
+    /// `search.result.task.<id>`, `search.result.project.<id>`, `search.result.person.<email>` (UI tests).
+    var accessibilityID: String {
+        switch kind {
+        case .task(let id): "search.result.task.\(id)"
+        case .project(let id): "search.result.project.\(id)"
+        case .person(let email): "search.result.person.\(email)"
+        }
+    }
 
     static func items(from results: SearchResults?) -> [PaletteItem] {
         guard let results else { return [] }

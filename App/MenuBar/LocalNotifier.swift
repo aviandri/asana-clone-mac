@@ -9,8 +9,8 @@ import UserNotifications
 @MainActor
 final class LocalNotifier: NSObject, UNUserNotificationCenterDelegate {
     static let shared = LocalNotifier()
-    static let askedKey = "askedNotificationPermission"
-    static let taskKey = "taskID"
+    nonisolated static let askedKey = "askedNotificationPermission"
+    nonisolated static let taskKey = "taskID"
 
     /// Opens a task (set by the App to route through the session and router).
     var onOpenTask: (String) -> Void = { _ in }
