@@ -36,6 +36,13 @@ Linux rules (SPEC-MAC §3):
   `@MainActor` class (the build fails with "call to main actor-isolated instance method … in a
   synchronous nonisolated context"). Use `await fulfillment(of:)` instead of `wait(for:)`.
 
+## Known limitation: Keychain prompts on unsigned builds
+v1 builds are ad-hoc signed, so the legacy Keychain ties the session token's access to that build's
+code signature. After an update, macOS may ask once whether "Mekari Project" may use the saved
+item. The app reads the token **once at launch** (then keeps it in memory) and rewrites it on
+sign-in, so it's at most one prompt per update. Denying it just means signing in again. This goes
+away once builds are signed with a team ID (data-protection keychain).
+
 ## Developing on a Mac
 ```sh
 brew install xcodegen
