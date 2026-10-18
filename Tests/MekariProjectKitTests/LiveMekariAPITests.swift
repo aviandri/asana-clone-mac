@@ -17,6 +17,12 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
   private var replies: [Reply] = []
   private(set) var requests: [URLRequest] = []
   var failWithTransportError = false
+  /// Runs while a request is "in flight" (after it was sent, before the reply).
+  var duringRequest: (@Sendable () -> Void)?
+  /// Never replies; only cancellation ends the request.
+  var hang = false
+  /// Fails like URLSession does when its task is cancelled.
+  var failWithURLCancelled = false
 
   func enqueue(_ reply: Reply) {
     lock.locked { replies.append(reply) }
@@ -27,6 +33,9 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
       requests.append(request)
       return replies.isEmpty ? nil : replies.removeFirst()
     }
+    duringRequest?()
+    if hang { try await Task.sleep(for: .seconds(3600)) }
+    if failWithURLCancelled { throw URLError(.cancelled) }
     if failWithTransportError { throw URLError(.notConnectedToInternet) }
     let r = reply ?? Reply()
     let response = HTTPURLResponse(url: request.url!, statusCode: r.status, httpVersion: "HTTP/1.1", headerFields: r.headers)!

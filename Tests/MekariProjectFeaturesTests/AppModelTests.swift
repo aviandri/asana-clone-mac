@@ -1,7 +1,7 @@
 import Foundation
 import MekariProjectKit
 import Observation
-import XCTest
+@preconcurrency import XCTest
 @testable import MekariProjectFeatures
 
 final class AppModelTests: XCTestCase {

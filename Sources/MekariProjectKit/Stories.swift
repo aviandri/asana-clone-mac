@@ -97,14 +97,17 @@ public enum Story: Codable, Sendable, Hashable, Identifiable {
     }
   }
 
-  private enum Kind: String, Codable { case comment, activity }
+  /// Thrown for a `kind` this build doesn't know; feeds skip such stories (`StoryFeed`).
+  public struct UnknownKind: Error, Equatable { public let kind: String }
+
   private enum CodingKeys: String, CodingKey { case kind }
 
   public init(from decoder: Decoder) throws {
-    let kind = try decoder.container(keyedBy: CodingKeys.self).decode(Kind.self, forKey: .kind)
+    let kind = try decoder.container(keyedBy: CodingKeys.self).decode(String.self, forKey: .kind)
     switch kind {
-    case .comment: self = .comment(try Comment(from: decoder))
-    case .activity: self = .activity(try Activity(from: decoder))
+    case "comment": self = .comment(try Comment(from: decoder))
+    case "activity": self = .activity(try Activity(from: decoder))
+    default: throw UnknownKind(kind: kind)
     }
   }
 
@@ -113,6 +116,30 @@ public enum Story: Codable, Sendable, Hashable, Identifiable {
     case .comment(let comment): try comment.encode(to: encoder)
     case .activity(let activity): try activity.encode(to: encoder)
     }
+  }
+}
+
+/// `{ "data": [Story] }` from `GET /tasks/:id/stories`, skipping stories of an unknown `kind` instead
+/// of failing the whole feed. Malformed stories of a known kind still fail.
+struct StoryFeed: Decodable {
+  let data: [Story]
+
+  private enum CodingKeys: String, CodingKey { case data }
+
+  private struct Entry: Decodable {
+    let story: Story?
+    init(from decoder: Decoder) throws {
+      do {
+        story = try Story(from: decoder)
+      } catch is Story.UnknownKind {
+        story = nil
+      }
+    }
+  }
+
+  init(from decoder: Decoder) throws {
+    let entries = try decoder.container(keyedBy: CodingKeys.self).decode([Entry].self, forKey: .data)
+    data = entries.compactMap(\.story)
   }
 }
 

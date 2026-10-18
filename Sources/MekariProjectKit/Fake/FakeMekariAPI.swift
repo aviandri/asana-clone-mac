@@ -257,15 +257,31 @@ public actor FakeMekariAPI: MekariAPI {
         assignee = .some(nil)
       }
     }
-    if case .set(let sectionID)? = changes.sectionId {
-      let projectID = changes.projectId?.value ?? task.projectId
+    var effective = changes
+    if let projectPatch = changes.projectId, projectPatch.value != task.projectId {
+      // Moving between projects (BE): subtasks follow their parent; the target must be visible,
+      // editable and in the same workspace; the old section never carries over.
+      if task.parentId != nil { throw validation("projectId", "Move the parent instead") }
+      if case .set(let projectID) = projectPatch {
+        guard let target = db.projects.first(where: { $0.project.id == projectID }) else { throw notFound("Project") }
+        if target.project.workspaceId != task.workspaceId { throw validation("projectId", "Project is in another workspace") }
+        let (_, _, role) = try visibleProject(projectID)
+        try requireEdit(target, user: user, role: role)
+      }
+      if changes.sectionId == nil { effective.sectionId = .clear }
+    }
+    if case .set(let sectionID)? = effective.sectionId {
+      let projectID = effective.projectId.map { $0.value } ?? task.projectId
       guard let record = db.projects.first(where: { $0.project.id == projectID }), record.sections.contains(where: { $0.id == sectionID })
       else { throw validation("sectionId", "Section belongs to a different project") }
     }
     guard let index = db.tasks.firstIndex(where: { $0.id == id }) else { throw notFound("Task") }
-    var updated = changes.applied(to: db.tasks[index], assignee: assignee)
+    var updated = effective.applied(to: db.tasks[index], assignee: assignee)
     updated.updatedAt = Date()
     db.tasks[index] = updated
+    if effective.projectId != nil {
+      for i in db.tasks.indices where db.tasks[i].parentId == id { db.tasks[i].projectId = updated.projectId }
+    }
     if let completed = changes.completed, completed != task.completed {
       appendActivity(id, actor: user, completed ? .completed : .reopened)
       if completed { notify(db.followers[id] ?? [], .completed, actor: user, task: updated) }
@@ -274,6 +290,8 @@ public actor FakeMekariAPI: MekariAPI {
       db.followers[id] = Array(Set((db.followers[id] ?? []) + [newAssignee.id])).sorted()
       appendActivity(id, actor: user, .assigned, data: .object(["assigneeId": .string(newAssignee.id)]))
       notify([newAssignee.id], .assigned, actor: user, task: updated)
+    } else if case .some(.none) = assignee, let previous = task.assignee {
+      appendActivity(id, actor: user, .unassigned, data: .object(["assigneeId": .string(previous.id)]))
     }
     return detail(updated)
   }
@@ -314,11 +332,15 @@ public actor FakeMekariAPI: MekariAPI {
     let user = try requireUser()
     let (task, _) = try visibleTask(taskID)
     let comment = Comment(id: newID(), author: summary(user)!, body: try nonEmpty(body, "body"), createdAt: Date())
-    db.stories[taskID, default: []].append(.comment(comment))
     let mentioned = comment.segments.compactMap { segment -> String? in
-      if case .mention(_, let id) = segment, activeMembership(id, task.workspaceId) != nil { return id }
+      if case .mention(_, let id) = segment { return id }
       return nil
     }
+    // BE: only members of the task's workspace can be mentioned.
+    if mentioned.contains(where: { activeMembership($0, task.workspaceId) == nil }) {
+      throw validation("body", "Only members of this workspace can be mentioned")
+    }
+    db.stories[taskID, default: []].append(.comment(comment))
     notify(mentioned, .mentioned, actor: user, task: task)
     notify((db.followers[taskID] ?? []).filter { !mentioned.contains($0) }, .commented, actor: user, task: task)
     db.followers[taskID] = Array(Set((db.followers[taskID] ?? []) + [user])).sorted()
@@ -446,12 +468,12 @@ public actor FakeMekariAPI: MekariAPI {
     let isMember = record.members.contains { $0.user.id == user }
     switch role {
     case .admin: return true
-    case .guest: return isMember
+    case .guest, .other: return isMember
     case .member:
       switch record.project.privacy {
       case .public: return true
       case .team: return isMember || db.teams.first { $0.id == record.project.teamId }?.memberIds.contains(user) == true
-      case .private: return isMember
+      case .private, .other: return isMember
       }
     }
   }
