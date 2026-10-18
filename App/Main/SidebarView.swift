@@ -93,6 +93,11 @@ struct WorkspaceMenu: View {
                     if current.isGuest { GuestPill() }
                 }
                 Spacer(minLength: 0)
+                if session.isSwitching {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Switching workspace")
+                }
             }
             .contentShape(Rectangle())
         }
@@ -100,7 +105,7 @@ struct WorkspaceMenu: View {
         .menuIndicator(.visible)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityLabel("Workspace menu")
-        .accessibilityValue(session.current?.name ?? "")
+        .accessibilityValue(session.isSwitching ? "Switching…" : (session.current?.name ?? ""))
         .accessibilityIdentifier("sidebar.workspaceMenu")
         .help("Switch workspace (⌘1…⌘9)")
     }

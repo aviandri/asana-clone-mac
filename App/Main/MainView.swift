@@ -22,8 +22,12 @@ struct MainView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 320)
         } detail: {
             content
+                // No edits against a workspace that's about to be replaced.
+                .disabled(session.isSwitching)
+                .navigationSubtitle(session.isSwitching ? "Switching workspace…" : "")
                 .inspector(isPresented: $showInspector) {
                     inspector
+                        .disabled(session.isSwitching)
                         .inspectorColumnWidth(min: 300, ideal: 360, max: 560)
                 }
         }

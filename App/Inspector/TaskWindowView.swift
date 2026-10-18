@@ -25,6 +25,7 @@ struct TaskWindowView: View {
                     self.ref = TaskWindowRef(workspaceID: ref.workspaceID, taskID: id)
                 })
                 .id("\(scope.id)/\(ref.taskID)")
+                .disabled(session.isSwitching)
                 .navigationTitle(scope.tasks[ref.taskID]?.title ?? "Task")
             } else if let ref, session.scope != nil {
                 OtherWorkspaceView(session: session, workspaceID: ref.workspaceID)
