@@ -54,9 +54,26 @@ NODE_PATH=/tmp/resvg/node_modules node scripts/make-app-icon.mjs
 |---|---|
 | `linux-kit` | `swift build` + `swift test` in the `swift:6.0` container |
 | `linux-contract` | BE `main` (Postgres service, migrate, full seed) + `swift test --filter ContractTests` |
-| `macos-app` | `macos-15`: `swift test`, XcodeGen, `xcodebuild build test` (unsigned), universal Release archive, ad-hoc signed, zipped; uploaded as an artifact on pushes to `main` and tags |
+| `macos-app` | `macos-15`: `swift test`, XcodeGen, `xcodebuild build test` (unsigned), universal Release archive, ad-hoc signed, launch smoke (5 s with `-UITestFakeAPI`), zipped; uploaded as an artifact on pushes to `main` and tags |
+| `release` | `v*` tags only: GitHub Release with the zip and generated notes |
 
-## Installing a build (unsigned)
-Download the `MekariProject-<sha>` artifact from a `main` CI run and unzip it. Move
-`Mekari Project.app` to Applications. The first time, right-click → Open (it's ad-hoc signed, not
-notarized).
+## Installing (unsigned builds)
+Releases are universal (Apple Silicon + Intel) and need macOS 14 Sonoma or later. They're ad-hoc
+signed but not notarized, so macOS asks for confirmation the first time.
+
+1. Download `MekariProject-<version>.zip` from the
+   [latest release](https://github.com/aviandri/asana-clone-mac/releases/latest).
+   Builds of `main` are also attached to each CI run as the `MekariProject-<sha>` artifact.
+2. Unzip it (double-click) and move **Mekari Project.app** to **Applications**.
+3. The first time, **right-click the app → Open**, then confirm **Open**. Or clear the quarantine
+   flag from Terminal:
+   ```sh
+   xattr -dr com.apple.quarantine "/Applications/Mekari Project.app"
+   ```
+4. Sign in with your Mekari Project server URL, email and password.
+
+## Releasing
+Push a tag `vMAJOR.MINOR.PATCH` (or `vMAJOR.MINOR.PATCH-rc1` for a prerelease) on `main`; only the
+orchestrator tags. CI stamps the version (`MARKETING_VERSION` from the tag, build number = run
+number), builds and launch-smokes the universal app, and the `release` job creates a GitHub Release.
+The release has the zip attached and notes generated from the merged PR titles.
