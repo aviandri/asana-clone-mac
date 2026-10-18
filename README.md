@@ -51,6 +51,28 @@ brew install xcodegen
 xcodegen generate && open MekariProject.xcodeproj   # scheme: MekariProjectApp
 ```
 
+From Terminal (rerun `xcodegen generate` after pulling changes to `project.yml` or adding files):
+```sh
+xcodegen generate
+
+# Unit + UI tests. The UI tests drive the real app and take over the screen
+# (keyboard and mouse) while they run, so leave the Mac alone until they finish.
+xcodebuild -project MekariProject.xcodeproj -scheme MekariProjectApp \
+  -destination 'platform=macOS' CODE_SIGN_IDENTITY=- build test
+
+# A runnable Debug build in ./build (git-ignored):
+xcodebuild -project MekariProject.xcodeproj -scheme MekariProjectApp -configuration Debug \
+  -destination 'platform=macOS' -derivedDataPath build CODE_SIGN_IDENTITY=- build
+open "build/Build/Products/Debug/Mekari Project.app"
+
+# Package tests only (Kit + Features, no app):
+swift test
+```
+Locally, sign ad-hoc (`CODE_SIGN_IDENTITY=-`, as `project.yml` already does), not with
+`CODE_SIGNING_ALLOWED=NO`. CI uses `CODE_SIGNING_ALLOWED=NO`, but on an Apple Silicon Mac an
+unsigned UI test runner is killed before it starts ("Early unexpected exit … signal kill before
+starting test execution").
+
 ## App icon
 `App/Resources/AppIcon.svg` is the web favicon on the macOS icon grid. Regenerate the PNGs after
 changing it:
