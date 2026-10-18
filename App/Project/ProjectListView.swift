@@ -62,7 +62,7 @@ struct ProjectListView: View {
                 }
             }
             // Scoped to the task rows, not the List (see MyTasksView): the add row below stays out of it.
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: scope.tasks.lingering)
+            .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: scope.tasks.lingering)
             if store.canEdit {
                 AddTaskRow { title in
                     Task { await store.addTask(title: title, section: sectionID) }

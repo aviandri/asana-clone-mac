@@ -152,7 +152,7 @@ struct CompletionTitle: View {
                     .opacity(completed ? 1 : 0)
                     .accessibilityHidden(true)
             }
-            .animation(reduceMotion ? .easeInOut(duration: 0.12) : .easeOut(duration: 0.3), value: completed)
+            .animation(reduceMotion ? .easeInOut(duration: 0.12) : .easeOut(duration: 0.2), value: completed)
     }
 }
 

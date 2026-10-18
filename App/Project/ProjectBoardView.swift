@@ -61,7 +61,7 @@ private struct BoardColumn: View {
                         }
                     }
                     // A completed card lingers ~700 ms (TaskCache), then slides out.
-                    .animation(reduceMotion ? nil : .easeInOut(duration: 0.28), value: scope.tasks.lingering)
+                    .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: scope.tasks.lingering)
                     if store.canEdit {
                         AddTaskRow { title in
                             Task { await store.addTask(title: title, section: sectionID) }
