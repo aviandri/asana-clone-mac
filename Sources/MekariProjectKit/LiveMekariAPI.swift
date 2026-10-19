@@ -57,8 +57,10 @@ public actor LiveMekariAPI: MekariAPI {
     guard let token = SessionCookie.token(from: response) else {
       throw APIError.decoding("no session cookie in the login response")
     }
+    // Decoded first: a response we can't read must not leave a half session behind.
+    let me = try decode(Me.self, from: data)
     tokens.save(token)
-    return try decode(Me.self, from: data)
+    return me
   }
 
   public func logout() async {

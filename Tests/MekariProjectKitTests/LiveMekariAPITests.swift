@@ -92,6 +92,17 @@ final class LiveMekariAPITests: XCTestCase {
     }
   }
 
+  func testALoginResponseThatCantBeReadLeavesNoHalfSession() async {
+    transport.enqueue(.init(body: #"{"unexpected":true}"#, headers: ["Set-Cookie": "sid=abc; Path=/"]))
+    do {
+      _ = try await api.login(email: "a@b.c", password: "x")
+      XCTFail("expected an error")
+    } catch {
+      XCTAssertEqual((error as? APIError)?.code, .decoding)
+    }
+    XCTAssertNil(tokens.load())
+  }
+
   func testWorkspaceHeaderOnScopedButNotOnAuthOrWorkspaces() async throws {
     await api.setWorkspace("ws-1")
     transport.enqueue(.init(body: #"{"data":[]}"#))

@@ -143,7 +143,8 @@ public final class KeychainTokenStore: TokenStore, @unchecked Sendable {
 
 #endif
 
-/// The one server this install talks to (SPEC-MAC §4).
+/// The one server this install talks to (SPEC-MAC §4). Setting it must persist before returning: sign-in
+/// stores the URL, then the token, and relies on that order.
 public protocol ServerSettings: AnyObject, Sendable {
   var serverURL: URL? { get set }
 }
