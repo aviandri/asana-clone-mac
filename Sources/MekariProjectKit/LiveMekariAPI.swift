@@ -255,8 +255,7 @@ public actor LiveMekariAPI: MekariAPI {
         // Only a 401 for the session we still hold ends it: a late answer to a request sent with an
         // older token (the poller, another window) must not sign out a fresh session. Login and
         // logout never emit.
-        if let sentToken, tokens.load() == sentToken, path != "/auth/login", path != "/auth/logout" {
-          tokens.clear()
+        if let sentToken, path != "/auth/login", path != "/auth/logout", tokens.clear(ifCurrent: sentToken) {
           eventSink.yield(.unauthorized)
         }
       } else if response.statusCode == 404, let sentWorkspace, LiveMekariAPI.isScopedCollection(method, path) {

@@ -25,6 +25,11 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
     session = URLSession(configuration: configuration, delegate: redirects, delegateQueue: nil)
   }
 
+  /// A session with a delegate keeps it (and itself) alive until invalidated; one transport per client.
+  deinit {
+    session.finishTasksAndInvalidate()
+  }
+
   /// Cancelling the calling task cancels the `URLSessionTask` and throws `CancellationError`.
   public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
     let handle = TaskHandle()
@@ -50,6 +55,7 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
 
   /// Settings this transport relies on (tested).
   var configuration: URLSessionConfiguration { session.configuration }
+  var delegate: URLSessionDelegate? { session.delegate }
 }
 
 /// Declines every redirect, so the task completes with the 3xx response.

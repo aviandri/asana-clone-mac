@@ -9,6 +9,10 @@ public protocol TokenStore: Sendable {
   func load() -> String?
   func save(_ token: String)
   func clear()
+  /// Clears only if the stored token is still `token`; true when it did. Atomic with `save`: a late 401 for
+  /// an older session must never wipe a newer sign-in (two steps, compare then clear, could).
+  @discardableResult
+  func clear(ifCurrent token: String) -> Bool
 }
 
 /// For Linux, tests, previews and UI tests.
@@ -23,6 +27,15 @@ public final class InMemoryTokenStore: TokenStore, @unchecked Sendable {
   public func load() -> String? { lock.locked { token } }
   public func save(_ token: String) { lock.locked { self.token = token } }
   public func clear() { lock.locked { token = nil } }
+
+  @discardableResult
+  public func clear(ifCurrent token: String) -> Bool {
+    lock.locked {
+      guard self.token == token else { return false }
+      self.token = nil
+      return true
+    }
+  }
 }
 
 /// Raw secure storage for one secret, as OSStatus-style results (0 = success).
@@ -46,6 +59,7 @@ public enum SecretStatus {
 /// - A failed or denied read counts as signed out; signing in writes the item again.
 /// - Save: update; if the item is missing, add; on any other failure, delete and add.
 /// - Only status codes are logged, never the token.
+/// - Memory and the backend change together under one lock, so concurrent writes can't leave them apart.
 public final class CachedTokenStore: TokenStore, @unchecked Sendable {
   private let backend: SecretBackend
   private let log: @Sendable (String) -> Void
@@ -63,20 +77,35 @@ public final class CachedTokenStore: TokenStore, @unchecked Sendable {
   public func load() -> String? { lock.locked { token } }
 
   public func save(_ token: String) {
-    lock.locked { self.token = token }
-    var status = backend.update(token)
-    if status == SecretStatus.itemNotFound {
-      status = backend.add(token)
-    } else if status != SecretStatus.success {
-      log("token update failed: \(status); re-adding")
-      _ = backend.delete()
-      status = backend.add(token)
+    lock.locked {
+      self.token = token
+      var status = backend.update(token)
+      if status == SecretStatus.itemNotFound {
+        status = backend.add(token)
+      } else if status != SecretStatus.success {
+        log("token update failed: \(status); re-adding")
+        _ = backend.delete()
+        status = backend.add(token)
+      }
+      if status != SecretStatus.success { log("token save failed: \(status)") }
     }
-    if status != SecretStatus.success { log("token save failed: \(status)") }
   }
 
   public func clear() {
-    lock.locked { token = nil }
+    lock.locked { removeLocked() }
+  }
+
+  @discardableResult
+  public func clear(ifCurrent token: String) -> Bool {
+    lock.locked {
+      guard self.token == token else { return false }
+      removeLocked()
+      return true
+    }
+  }
+
+  private func removeLocked() {
+    token = nil
     let status = backend.delete()
     if status != SecretStatus.success, status != SecretStatus.itemNotFound { log("token delete failed: \(status)") }
   }
@@ -139,6 +168,8 @@ public final class KeychainTokenStore: TokenStore, @unchecked Sendable {
   public func load() -> String? { store.load() }
   public func save(_ token: String) { store.save(token) }
   public func clear() { store.clear() }
+  @discardableResult
+  public func clear(ifCurrent token: String) -> Bool { store.clear(ifCurrent: token) }
 }
 
 #endif

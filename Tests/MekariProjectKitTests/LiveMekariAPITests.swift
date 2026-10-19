@@ -92,6 +92,23 @@ final class LiveMekariAPITests: XCTestCase {
     }
   }
 
+  /// The store says the 401's session is no longer current (a newer sign-in got in between): nothing is cleared.
+  final class MovedOnTokens: TokenStore, @unchecked Sendable {
+    private(set) var cleared = false
+    func load() -> String? { "A" }
+    func save(_ token: String) {}
+    func clear() { cleared = true }
+    func clear(ifCurrent token: String) -> Bool { false }
+  }
+
+  func testAStale401NeverClearsANewerSession() async {
+    let store = MovedOnTokens()
+    let api = LiveMekariAPI(baseURL: server, tokens: store, transport: transport)
+    transport.enqueue(.init(status: 401, body: #"{"error":{"code":"UNAUTHORIZED","message":"expired"}}"#))
+    _ = try? await api.projects(archived: false)
+    XCTAssertFalse(store.cleared)
+  }
+
   func testLoginNeverSendsAStoredSession() async throws {
     tokens.save("kept-from-another-server")
     transport.enqueue(.init(body: Fixtures.me, headers: ["Set-Cookie": "sid=fresh; Path=/"]))
@@ -103,7 +120,7 @@ final class LiveMekariAPITests: XCTestCase {
   func testLogoutEndsTheSessionFirstSoASignInDuringTheRequestSurvives() async {
     tokens.save("A")
     let tokens = self.tokens!
-    transport.duringRequest = {
+    transport.duringRequest = { @Sendable in
       XCTAssertNil(tokens.load(), "signed out before the server answers")
       tokens.save("B") // signed in to another account while the logout is in flight
     }

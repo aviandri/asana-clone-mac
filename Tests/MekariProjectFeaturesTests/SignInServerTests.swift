@@ -58,14 +58,18 @@ final class SignInServerTests: XCTestCase {
       inner.clear()
       recorder.add("clear")
     }
+    func clear(ifCurrent token: String) -> Bool { inner.clear(ifCurrent: token) }
   }
 
   /// /health and /auth/login like the BE (wrong password → 401); every other request a harmless 404.
   final class Server: HTTPTransport, @unchecked Sendable {
     let recorder: Recorder
+    /// No server answers (a mistyped address).
+    var unreachable = false
     init(_ recorder: Recorder) { self.recorder = recorder }
 
     func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+      if unreachable { throw URLError(.cannotFindHost) }
       let path = request.url!.path
       let cookie = request.value(forHTTPHeaderField: "Cookie") ?? "none"
       var status = 404
@@ -98,10 +102,11 @@ final class SignInServerTests: XCTestCase {
   }
 
   @MainActor
-  func session(server: URL?, token: String?) -> (AppSession, Recorder, Settings) {
+  func session(server: URL?, token: String?, unreachable: Bool = false) -> (AppSession, Recorder, Settings) {
     let recorder = Recorder()
     let settings = Settings(server, recorder)
     let transport = Server(recorder)
+    transport.unreachable = unreachable
     let session = AppSession(settings: settings, tokens: Tokens(token, recorder), apiFactory: { url, tokens in
       LiveMekariAPI(baseURL: url, tokens: tokens, transport: transport)
     })
@@ -115,7 +120,7 @@ final class SignInServerTests: XCTestCase {
     let (session, recorder, settings) = self.session(server: old, token: "old-token")
     await session.signIn(server: "new.example.com", email: "alice@example.com", password: DemoIDs.password)
     guard case .signedIn = session.state else { return XCTFail("not signed in: \(String(describing: session.signInError))") }
-    XCTAssertEqual(recorder.log, ["clear", "health", "url=https://new.example.com", "login(cookie=none)", "save"])
+    XCTAssertEqual(recorder.log, ["health", "clear", "url=https://new.example.com", "login(cookie=none)", "save"])
     XCTAssertEqual(settings.serverURL?.absoluteString, "https://new.example.com")
   }
 
@@ -127,7 +132,7 @@ final class SignInServerTests: XCTestCase {
     XCTAssertEqual(settings.serverURL, old)
     XCTAssertEqual(
       recorder.log,
-      ["clear", "health", "url=https://new.example.com", "login(cookie=none)", "url=https://old.example.com"]
+      ["health", "clear", "url=https://new.example.com", "login(cookie=none)", "url=https://old.example.com"]
     )
   }
 
@@ -148,6 +153,16 @@ final class SignInServerTests: XCTestCase {
     // Nothing loaded, but the store is still asked to clear: whatever it holds belongs to the old server.
     let (session, recorder, _) = self.session(server: old, token: nil)
     await session.signIn(server: "new.example.com", email: "alice@example.com", password: DemoIDs.password)
-    XCTAssertEqual(recorder.log.first, "clear")
+    XCTAssertEqual(Array(recorder.log.prefix(3)), ["health", "clear", "url=https://new.example.com"])
+  }
+
+  @MainActor
+  func testAMistypedServerCostsNothing() async {
+    // No server answers: the kept session and the stored URL stay as they were.
+    let (session, recorder, settings) = self.session(server: old, token: "old-token", unreachable: true)
+    await session.signIn(server: "old.example.co", email: "alice@example.com", password: DemoIDs.password)
+    XCTAssertEqual(session.signInError, .transport)
+    XCTAssertEqual(settings.serverURL, old)
+    XCTAssertEqual(recorder.log, [])
   }
 }
