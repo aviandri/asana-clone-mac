@@ -177,3 +177,32 @@ belongs to; if no access, show "You don't have access").
   5. **App complete** (Mac UI engineer): projects list/board with drag and drop, inbox, search palette,
      menu bar extra, local notifications, deep links, open in browser, XCUITest smoke.
   6. **Release** (platform): universal archive, zip, GitHub Release on tags, README install steps.
+
+## 8. Attachments & links (v0.2, BE SPEC §13)
+
+Contract, permissions and the shared client UX are in BE `docs/SPEC.md` §13; this is the Mac part.
+- **Kit:** `Attachment` model (open `kind`), endpoints, multipart upload streamed **from a file
+  URL** (`URLSession.uploadTask(fromFile:)` with a temp multipart file, never the whole file in
+  memory), progress + cancel, `413 PAYLOAD_TOO_LARGE` decoded. Authenticated downloads
+  (`Cookie: sid`) to **`Caches/Attachments/<attachmentId>/<sanitised name>`**, keyed by `ETag`;
+  LRU cap **1 GB**. The cache (and image thumbnails in memory) is **wiped on sign-out and on
+  losing access to a workspace**; never stored outside Caches.
+- **Downloaded files get the quarantine xattr** (`com.apple.quarantine`, agent "Mekari Project"), as
+  Safari does, so Gatekeeper checks apps/scripts opened from attachments. Never `chmod +x`.
+- **Preview: Quick Look** (`QLPreviewPanel`, Space on a selected attachment, ←/→ through the
+  task's attachments) for everything Quick Look supports (images, PDF, video, audio, text, Office,
+  iWork…). Thumbnails from the BE `thumbnailPath`; for files without one,
+  `QLThumbnailGenerator` after download is OK but not required.
+- **Actions** (context menu + buttons): Quick Look, **Open** (default app, `NSWorkspace.open`),
+  **Open With ▸** (apps from `NSWorkspace.urlsForApplications(toOpen:)`, default first, plus
+  "Other…"), **Open in Browser** (task web URL `?workspace=`), **Save As…** (`NSSavePanel`),
+  **Save to Downloads**, **Show in Finder** (after download), **Copy Link**, **Delete**.
+  LINK: click opens in the default browser; **Open With ▸** lists installed browsers (apps for
+  `https`); Copy Link. Only `http`/`https` URLs are ever opened.
+- **Add:** Attach button (`NSOpenPanel`, multiple), **drag & drop** files onto the task inspector
+  or comment composer, **⌘V** of files/images (pasted image → `Pasted image <date>.png`), Add Link
+  popover (URL + optional title). Composer chips show progress and Retry/Remove.
+- Composer text field stays the undo-free `AddItemField`/existing comment field; attachment chips
+  live outside the text view (don't regress the NSTextView crash fix).
+- UI tests: fake API serves fixture attachments; cover Quick Look open, Open With menu population,
+  drag-drop and paste into the composer, delete, and that the cache dir is empty after sign-out.
