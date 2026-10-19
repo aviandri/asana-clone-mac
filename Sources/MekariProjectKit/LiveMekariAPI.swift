@@ -53,7 +53,8 @@ public actor LiveMekariAPI: MekariAPI {
 
   public func login(email: String, password: String) async throws -> Me {
     struct Body: Encodable { let email: String; let password: String }
-    let (data, response) = try await send(.post, "/auth/login", body: Body(email: email, password: password))
+    // A stored session (another account's, maybe another server's) has no business here.
+    let (data, response) = try await send(.post, "/auth/login", body: Body(email: email, password: password), session: .none)
     guard let token = SessionCookie.token(from: response) else {
       throw APIError.decoding("no session cookie in the login response")
     }
@@ -63,11 +64,12 @@ public actor LiveMekariAPI: MekariAPI {
     return me
   }
 
+  /// Ends the stored session locally FIRST, then tells the server with that captured token: a sign-in that
+  /// lands while this request hangs keeps its new token, and this request never carries the next session.
   public func logout() async {
-    if tokens.load() != nil {
-      _ = try? await send(.post, "/auth/logout")
-    }
+    guard let ending = tokens.load() else { return }
     tokens.clear()
+    _ = try? await send(.post, "/auth/logout", body: Optional<NoBody>.none, session: .exactly(ending))
   }
 
   public func me() async throws -> Me {
@@ -211,8 +213,15 @@ public actor LiveMekariAPI: MekariAPI {
     try await send(method, path, query: query, body: Optional<NoBody>.none)
   }
 
-  private func send<B: Encodable>(_ method: Method, _ path: String, query: [String: String?] = [:], body: B?) async throws
-    -> (Data, HTTPURLResponse) {
+  /// Which session a request carries: the stored one (read when it's sent), none, or exactly one.
+  private enum SessionChoice {
+    case stored
+    case none
+    case exactly(String)
+  }
+
+  private func send<B: Encodable>(_ method: Method, _ path: String, query: [String: String?] = [:], body: B?,
+                                  session: SessionChoice = .stored) async throws -> (Data, HTTPURLResponse) {
     var request = URLRequest(url: url(path, query: query))
     request.httpMethod = method.rawValue
     request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -220,7 +229,12 @@ public actor LiveMekariAPI: MekariAPI {
       request.httpBody = try encoder.encode(body)
       request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
-    let sentToken = tokens.load()
+    let sentToken: String?
+    switch session {
+    case .stored: sentToken = tokens.load()
+    case .none: sentToken = nil
+    case .exactly(let token): sentToken = token
+    }
     if let sentToken {
       request.setValue("\(SessionCookie.name)=\(sentToken)", forHTTPHeaderField: "Cookie")
     }
@@ -230,6 +244,11 @@ public actor LiveMekariAPI: MekariAPI {
     }
 
     let (data, response) = try await perform(request)
+    if (300..<400).contains(response.statusCode) {
+      // The transport never follows redirects (they'd carry the Cookie, or re-post a login, elsewhere).
+      throw APIError(code: .unknown("REDIRECT"), status: response.statusCode,
+                     message: "The server answered with a redirect (HTTP \(response.statusCode)). Check the server address, including https://.")
+    }
     guard (200..<300).contains(response.statusCode) else {
       let error = APIError.from(status: response.statusCode, body: data)
       if response.statusCode == 401 {

@@ -9,8 +9,11 @@ public protocol HTTPTransport: Sendable {
 }
 
 /// `URLSession` with automatic cookie handling off: the session token is managed by hand (SPEC-MAC §4).
+/// Redirects are never followed: URLSession would carry our hand-set `Cookie` (and re-post a login on 307/308)
+/// to wherever the server, a proxy or a captive portal points. The 3xx itself comes back as the response.
 public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
   private let session: URLSession
+  private let redirects = RedirectRefusal()
 
   public init(timeout: TimeInterval = 30) {
     let configuration = URLSessionConfiguration.ephemeral
@@ -19,7 +22,7 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
     configuration.httpCookieStorage = nil
     configuration.urlCache = nil
     configuration.timeoutIntervalForRequest = timeout
-    session = URLSession(configuration: configuration)
+    session = URLSession(configuration: configuration, delegate: redirects, delegateQueue: nil)
   }
 
   /// Cancelling the calling task cancels the `URLSessionTask` and throws `CancellationError`.
@@ -47,6 +50,14 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
 
   /// Settings this transport relies on (tested).
   var configuration: URLSessionConfiguration { session.configuration }
+}
+
+/// Declines every redirect, so the task completes with the 3xx response.
+final class RedirectRefusal: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+  func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                  newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+    completionHandler(nil)
+  }
 }
 
 /// Holds the data task so a cancellation that races with its start still cancels it.

@@ -222,9 +222,9 @@ public final class AppSession {
     isSigningIn = true
     defer { isSigningIn = false }
     let previousURL = settings.serverURL
-    // A session kept from an offline launch belongs to the old server: its cookie must never reach another
-    // one (/auth/login carries the stored token).
-    if !ServerURL.isSameServer(url, previousURL), tokens.load() != nil { tokens.clear() }
+    // Any session for the old server goes (stored ones included): once this URL is stored, restoring it would
+    // send the old server's cookie here.
+    if !ServerURL.isSameServer(url, previousURL) { tokens.clear() }
     let api = makeAPI(url)
     do {
       try await api.health()

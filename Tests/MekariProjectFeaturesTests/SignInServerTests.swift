@@ -138,8 +138,16 @@ final class SignInServerTests: XCTestCase {
     await session.signIn(server: "https://OLD.example.com:443/", email: "alice@example.com", password: DemoIDs.password)
     guard case .signedIn = session.state else { return XCTFail("not signed in") }
     XCTAssertEqual(recorder.log.first, "health")
-    XCTAssertFalse(recorder.log.contains("clear"))
-    XCTAssertTrue(recorder.log.contains("login(cookie=sid=old-token)"))
+    XCTAssertFalse(recorder.log.contains("clear"), "the kept session stays until the new login replaces it")
+    XCTAssertTrue(recorder.log.contains("login(cookie=none)"), "a login never carries a stored session")
     XCTAssertEqual(recorder.log.last, "save")
+  }
+
+  @MainActor
+  func testAStoredOnlySessionForAnotherServerIsClearedToo() async {
+    // Nothing loaded, but the store is still asked to clear: whatever it holds belongs to the old server.
+    let (session, recorder, _) = self.session(server: old, token: nil)
+    await session.signIn(server: "new.example.com", email: "alice@example.com", password: DemoIDs.password)
+    XCTAssertEqual(recorder.log.first, "clear")
   }
 }
