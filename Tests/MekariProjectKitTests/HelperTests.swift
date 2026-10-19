@@ -149,3 +149,18 @@ final class QueryEncodingTests: XCTestCase {
     XCTAssertEqual(QueryEncoding.encode("Ünï"), "%C3%9Cn%C3%AF")
   }
 }
+
+final class ServerIdentityTests: XCTestCase {
+  func testSameServerIgnoresCaseDefaultPortsAndTrailingSlashes() {
+    let url = { (s: String) in URL(string: s)! }
+    XCTAssertTrue(ServerURL.isSameServer(url("https://MP.Example.com"), url("https://mp.example.com/")))
+    XCTAssertTrue(ServerURL.isSameServer(url("HTTPS://mp.example.com:443"), url("https://mp.example.com")))
+    XCTAssertTrue(ServerURL.isSameServer(url("http://mp.example.com:80/app/"), url("http://mp.example.com/app")))
+    XCTAssertFalse(ServerURL.isSameServer(url("http://mp.example.com"), url("https://mp.example.com")), "scheme change")
+    XCTAssertFalse(ServerURL.isSameServer(url("https://mp.example.com:8443"), url("https://mp.example.com")))
+    XCTAssertFalse(ServerURL.isSameServer(url("https://mp.example.com/a"), url("https://mp.example.com/b")))
+    XCTAssertFalse(ServerURL.isSameServer(url("https://evil.example.com"), url("https://mp.example.com")))
+    XCTAssertFalse(ServerURL.isSameServer(url("https://mp.example.com"), nil))
+    XCTAssertFalse(ServerURL.isSameServer(nil, nil))
+  }
+}

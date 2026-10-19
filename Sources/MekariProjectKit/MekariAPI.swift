@@ -77,4 +77,21 @@ public enum ServerURL {
           let host = url.host, !host.isEmpty, !host.contains(" ") else { return nil }
     return url
   }
+
+  /// Whether two server URLs name the same server: scheme and host compared without case, default ports
+  /// (443 for https, 80 for http) and trailing slashes ignored. A scheme change is a different server.
+  public static func isSameServer(_ a: URL?, _ b: URL?) -> Bool {
+    guard let a, let b, let left = canonical(a), let right = canonical(b) else { return false }
+    return left == right
+  }
+
+  static func canonical(_ url: URL) -> String? {
+    guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          let scheme = parts.scheme?.lowercased(), let host = parts.host?.lowercased(), !host.isEmpty else { return nil }
+    let defaultPort = scheme == "https" ? 443 : scheme == "http" ? 80 : nil
+    let port = parts.port.flatMap { $0 == defaultPort ? nil : ":\($0)" } ?? ""
+    var path = parts.percentEncodedPath
+    while path.hasSuffix("/") { path.removeLast() }
+    return "\(scheme)://\(host)\(port)\(path)"
+  }
 }

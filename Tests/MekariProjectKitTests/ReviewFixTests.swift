@@ -111,6 +111,7 @@ final class SessionRaceAndCancellationTests: XCTestCase {
     XCTAssertFalse(configuration.httpShouldSetCookies)
     XCTAssertNil(configuration.httpCookieStorage)
     XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
+    XCTAssertTrue(URLSessionTransport().delegate is RedirectRefusal, "redirects are declined by the session's delegate")
   }
 
   func testEmpty204BodiesAreFine() async throws {
@@ -145,6 +146,8 @@ final class CachedTokenStoreTests: XCTestCase {
     var updateStatus: Int32?
     var reads = 0
     var log: [String] = []
+    /// Slows writes, to widen any window between memory and the backend.
+    var writeDelay: useconds_t = 0
 
     init(stored: String? = nil) { self.stored = stored }
 
@@ -157,7 +160,8 @@ final class CachedTokenStoreTests: XCTestCase {
       }
     }
     func update(_ value: String) -> Int32 {
-      lock.locked {
+      if writeDelay > 0 { usleep(writeDelay) }
+      return lock.locked {
         log.append("update")
         if let updateStatus { return updateStatus }
         guard stored != nil else { return SecretStatus.itemNotFound }
@@ -174,12 +178,42 @@ final class CachedTokenStoreTests: XCTestCase {
       }
     }
     func delete() -> Int32 {
-      lock.locked {
+      if writeDelay > 0 { usleep(writeDelay) }
+      return lock.locked {
         log.append("delete")
         let had = stored != nil
         stored = nil
         return had ? SecretStatus.success : SecretStatus.itemNotFound
       }
+    }
+  }
+
+  func testClearIfCurrentOnlyClearsThatSession() {
+    let backend = FakeBackend(stored: "old")
+    let store = CachedTokenStore(backend: backend)
+    store.save("new")
+    XCTAssertFalse(store.clear(ifCurrent: "old"), "a late 401 for the old session")
+    XCTAssertEqual(store.load(), "new")
+    XCTAssertEqual(backend.stored, "new")
+    XCTAssertTrue(store.clear(ifCurrent: "new"))
+    XCTAssertNil(store.load())
+    XCTAssertNil(backend.stored)
+
+    let memory = InMemoryTokenStore(token: "a")
+    XCTAssertFalse(memory.clear(ifCurrent: "b"))
+    XCTAssertTrue(memory.clear(ifCurrent: "a"))
+    XCTAssertNil(memory.load())
+  }
+
+  func testConcurrentWritesLeaveMemoryAndTheBackendTogether() {
+    for round in 0..<20 {
+      let backend = FakeBackend()
+      backend.writeDelay = 50
+      let store = CachedTokenStore(backend: backend)
+      DispatchQueue.concurrentPerform(iterations: 16) { i in
+        if i.isMultiple(of: 3) { store.clear() } else { store.save("t\(i)") }
+      }
+      XCTAssertEqual(store.load(), backend.stored, "round \(round)")
     }
   }
 

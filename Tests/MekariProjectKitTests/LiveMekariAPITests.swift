@@ -92,6 +92,87 @@ final class LiveMekariAPITests: XCTestCase {
     }
   }
 
+  /// The store says the 401's session is no longer current (a newer sign-in got in between): nothing is cleared.
+  final class MovedOnTokens: TokenStore, @unchecked Sendable {
+    private(set) var cleared = false
+    func load() -> String? { "A" }
+    func save(_ token: String) {}
+    func clear() { cleared = true }
+    func clear(ifCurrent token: String) -> Bool { false }
+  }
+
+  func testAStale401NeverClearsANewerSession() async {
+    let store = MovedOnTokens()
+    let api = LiveMekariAPI(baseURL: server, tokens: store, transport: transport)
+    transport.enqueue(.init(status: 401, body: #"{"error":{"code":"UNAUTHORIZED","message":"expired"}}"#))
+    _ = try? await api.projects(archived: false)
+    XCTAssertFalse(store.cleared)
+  }
+
+  func testLoginNeverSendsAStoredSession() async throws {
+    tokens.save("kept-from-another-server")
+    transport.enqueue(.init(body: Fixtures.me, headers: ["Set-Cookie": "sid=fresh; Path=/"]))
+    _ = try await api.login(email: "alice@example.com", password: "password123")
+    XCTAssertNil(transport.last?.value(forHTTPHeaderField: "Cookie"))
+    XCTAssertEqual(tokens.load(), "fresh")
+  }
+
+  func testLogoutEndsTheSessionFirstSoASignInDuringTheRequestSurvives() async {
+    tokens.save("A")
+    let tokens = self.tokens!
+    transport.duringRequest = { @Sendable in
+      XCTAssertNil(tokens.load(), "signed out before the server answers")
+      tokens.save("B") // signed in to another account while the logout is in flight
+    }
+    transport.enqueue(.init(status: 204, body: ""))
+    await api.logout()
+    XCTAssertEqual(transport.last?.url?.path, "/api/v1/auth/logout")
+    XCTAssertEqual(transport.last?.value(forHTTPHeaderField: "Cookie"), "sid=A")
+    XCTAssertEqual(tokens.load(), "B")
+
+    transport.duringRequest = nil
+    tokens.clear()
+    let sent = transport.requests.count
+    await api.logout()
+    XCTAssertEqual(transport.requests.count, sent, "nothing to end, nothing sent")
+  }
+
+  func testARedirectIsAnErrorAndKeepsTheSession() async {
+    tokens.save("tok")
+    transport.enqueue(.init(status: 302, headers: ["Location": "https://elsewhere.example.com/"]))
+    do {
+      _ = try await api.projects(archived: false)
+      XCTFail("expected an error")
+    } catch {
+      XCTAssertEqual((error as? APIError)?.code, .unknown("REDIRECT"))
+      XCTAssertEqual((error as? APIError)?.status, 302)
+    }
+    XCTAssertEqual(tokens.load(), "tok")
+  }
+
+  func testTheTransportDeclinesEveryRedirect() {
+    let refusal = RedirectRefusal()
+    let response = HTTPURLResponse(url: URL(string: "https://mp.example.com/api/v1/auth/login")!, statusCode: 307,
+                                   httpVersion: "HTTP/1.1", headerFields: ["Location": "https://evil.example.com/"])!
+    var followed: URLRequest?? = .none
+    refusal.urlSession(URLSession.shared, task: URLSession.shared.dataTask(with: response.url!),
+                       willPerformHTTPRedirection: response, newRequest: URLRequest(url: URL(string: "https://evil.example.com/")!)) {
+      followed = .some($0)
+    }
+    XCTAssertEqual(followed, .some(nil))
+  }
+
+  func testALoginResponseThatCantBeReadLeavesNoHalfSession() async {
+    transport.enqueue(.init(body: #"{"unexpected":true}"#, headers: ["Set-Cookie": "sid=abc; Path=/"]))
+    do {
+      _ = try await api.login(email: "a@b.c", password: "x")
+      XCTFail("expected an error")
+    } catch {
+      XCTAssertEqual((error as? APIError)?.code, .decoding)
+    }
+    XCTAssertNil(tokens.load())
+  }
+
   func testWorkspaceHeaderOnScopedButNotOnAuthOrWorkspaces() async throws {
     await api.setWorkspace("ws-1")
     transport.enqueue(.init(body: #"{"data":[]}"#))

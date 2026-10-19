@@ -221,6 +221,7 @@ public final class AppSession {
     }
     isSigningIn = true
     defer { isSigningIn = false }
+    let previousURL = settings.serverURL
     let api = makeAPI(url)
     do {
       try await api.health()
@@ -229,11 +230,20 @@ public final class AppSession {
       return
     }
     do {
-      let me = try await api.login(email: email.trimmingCharacters(in: .whitespaces), password: password)
+      // The URL is stored BEFORE login saves the token, so stored tokens always sit next to their server's URL
+      // (a token beside the previous server's URL would go to that host on the next launch). A failed sign-in
+      // puts the previous URL back.
+      // Any session for the old server goes (stored ones too), but only now, once the new server answered: a
+      // mistyped address must not cost a valid session. Cleared before the URL is stored, so storage never pairs
+      // the old token with the new URL. (Neither /health nor /auth/login carries a cookie meanwhile.)
+      if !ServerURL.isSameServer(url, previousURL) { tokens.clear() }
       settings.serverURL = url
+      let me = try await api.login(email: email.trimmingCharacters(in: .whitespaces), password: password)
       serverWorkspaceID = me.currentWorkspace?.id
       await adopt(me, api: api)
     } catch {
+      // Only while no session was stored for the new URL.
+      if tokens.load() == nil { settings.serverURL = previousURL }
       let apiError = error.asAPIError
       switch apiError.code {
       case .unauthorized: signInError = .wrongCredentials
