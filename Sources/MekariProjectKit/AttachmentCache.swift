@@ -113,14 +113,21 @@ public actor AttachmentCache {
     } catch {
       throw APIError(code: .unknown("client"), message: "Couldn't save the file")
     }
+    // The download lands in a temp file, moved into place below (the cached copy is read-only, so it is replaced by
+    // removing it first, never overwritten in place).
+    let temp = folder.appendingPathComponent(".\(UUID().uuidString).part")
     let outcome: DownloadOutcome
     do {
       // A cached copy under another name (the server renamed nothing, but be safe) is revalidated only in place.
       let etag = cached?.name == destination.lastPathComponent ? cached?.etag : nil
-      outcome = try await api.download(path, to: destination, ifNoneMatch: etag, progress: progress)
+      outcome = try await api.download(path, to: temp, ifNoneMatch: etag, progress: progress)
     } catch let error as APIError where error.code == .transport {
+      remove(temp)
       guard let cached, started == generation else { throw error }
       return touch(id, cached)
+    } catch {
+      remove(temp)
+      throw error
     }
     guard started == generation else {
       // Wiped while downloading (sign-out, lost access): the bytes must not stay.
@@ -134,6 +141,16 @@ public actor AttachmentCache {
     case .downloaded(let etag):
       if let cached, cached.name != destination.lastPathComponent {
         remove(folder.appendingPathComponent(cached.name))
+      }
+      do {
+        remove(destination) // a read-only cached copy: removing needs only the folder's write permission
+        try FileManager.default.moveItem(at: temp, to: destination)
+        // Read-only, so an app that opens it (Open, Open With) offers Save As / Duplicate instead of editing the copy
+        // the cache serves back as the attachment.
+        try FileManager.default.setAttributes([.posixPermissions: AttachmentCache.cachedFileMode], ofItemAtPath: destination.path)
+      } catch {
+        remove(temp)
+        throw APIError(code: .unknown("client"), message: "Couldn't save the file")
       }
       quarantine(destination)
       let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path)
@@ -254,6 +271,9 @@ public actor AttachmentCache {
     memoryBytes = 0
     try? FileManager.default.removeItem(at: directory)
   }
+
+  /// Downloaded files are r--r--r-- (0444).
+  public static let cachedFileMode: Int = 0o444
 
   /// Attachment ids are UUIDs; only those name folders here.
   static func isSafeID(_ id: String) -> Bool {

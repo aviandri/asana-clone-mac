@@ -48,6 +48,30 @@ final class AttachmentCacheTests: XCTestCase {
     XCTAssertEqual(marked.files.count, 1, "a 304 doesn't re-mark or rewrite")
   }
 
+  func testCachedFilesAreReadOnlyAndStillReplacedAndWiped() async throws {
+    let pdf = try await seeded(DemoIDs.attachmentPDF)
+    let url = try await cache().file(for: pdf, using: fake)
+    let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+    XCTAssertEqual(mode, 0o444, "apps that open it can't save into the cache")
+    XCTAssertFalse(FileManager.default.isWritableFile(atPath: url.path))
+
+    // A changed ETag (here: a tampered index) means a re-download, which must replace the read-only copy.
+    let indexURL = directory.appendingPathComponent("index.json")
+    var index = try JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as! [String: [String: Any]]
+    index[pdf.id]?["etag"] = "\"stale\""
+    try JSONSerialization.data(withJSONObject: index).write(to: indexURL)
+    let reopened = cache()
+    let again = try await reopened.file(for: pdf, using: fake)
+    XCTAssertEqual(again, url)
+    let calls = await downloads()
+    XCTAssertEqual(calls, 2, "the stale ETag was a 200, not a 304")
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+    XCTAssertEqual(leftovers, [url.lastPathComponent], "replaced, no .part left")
+
+    await reopened.wipe()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), "read-only files don't stop a wipe")
+  }
+
   func testOfflineServesTheCachedCopyButNotNothing() async throws {
     let cache = cache()
     let pdf = try await seeded(DemoIDs.attachmentPDF)

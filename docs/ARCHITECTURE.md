@@ -881,6 +881,10 @@ public var canSend: Bool { get }                    // text or ≥ 1 finished ch
 //                 preview()/uiTest() use AttachmentCache.scratch() (a temp folder, no quarantine)
 ```
 
+- **Read-only copies:** downloaded files are 0444 (with the quarantine xattr), so an app opened on them (Open, Open
+  With) offers Save As / Duplicate instead of editing the copy the cache serves back. Downloads land in a temp file
+  and replace the old copy by removing it first (removal needs only the folder's write permission); wipes and
+  eviction remove 0444 files the same way. The App's Save As / Save to Downloads copies reset to 0644.
 - **Approved decisions (orchestrator, 2026-10-26):** (a) the cache lives in `<Caches>/com.mekari.project/Attachments`,
   not `<Caches>/Attachments`: the app isn't sandboxed, and `wipe()` must only ever delete our own folder.
   (b) Upload file names go as UTF-8 in `filename="…"` with the browsers' escaping (`"` → `%22`, CR/LF → `%0D`/`%0A`),
