@@ -29,6 +29,15 @@ final class AttachmentUITests: XCTestCase {
         app.launchArguments = ["-UITestFakeAPI", "-ApplePersistenceIgnoreState", "YES"]
         app.launch()
         app.activate()
+        // As in AppFlowUITests.launch(): a slow first window, or one restored closed, comes back from the Window menu.
+        if !element(app, "sidebar.myTasks").waitForExistence(timeout: 20) {
+            let item = app.menuBars.menuBarItems["Window"].menuItems["Mekari Project"]
+            if item.exists {
+                app.menuBars.menuBarItems["Window"].click()
+                item.click()
+            }
+        }
+        app.activate()
         let row = element(app, "task.row.\(fixLogin)")
         XCTAssertTrue(row.waitForExistence(timeout: 20), "My Tasks row missing")
         row.click()
