@@ -47,7 +47,7 @@ struct AttachmentsSection: View {
                     .accessibilityLabel("Uploads")
                 }
                 if !attachments.isEmpty {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 128, maximum: 220), spacing: 8)], alignment: .leading, spacing: 8) {
+                    AdaptiveGrid(minimum: 128, maximum: 220, spacing: 8) {
                         ForEach(attachments) { a in
                             AttachmentTile(a: a, context: context, canDelete: store.canDelete(a)) { pendingDelete = a }
                         }
@@ -570,7 +570,7 @@ struct CommentAttachmentsView: View {
     let context: AttachmentContext
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 112, maximum: 180), spacing: 6)], alignment: .leading, spacing: 6) {
+        AdaptiveGrid(minimum: 112, maximum: 180, spacing: 6) {
             ForEach(attachments) { a in
                 AttachmentTile(a: a, context: context, compact: true)
             }
@@ -578,5 +578,52 @@ struct CommentAttachmentsView: View {
         .frame(maxWidth: 420, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Attachments in this comment")
+    }
+}
+
+/// Equal-width columns, as many as fit at `minimum` each (capped at `maximum`), rows as tall as their
+/// tallest tile. Not lazy: a task has few attachments, and every tile stays in the accessibility tree
+/// (a LazyVGrid drops off-screen tiles, which VoiceOver and UI tests then can't reach).
+struct AdaptiveGrid: Layout {
+    var minimum: CGFloat
+    var maximum: CGFloat
+    var spacing: CGFloat
+
+    private func columns(_ width: CGFloat, count: Int) -> (count: Int, width: CGFloat) {
+        guard width.isFinite else { return (max(count, 1), minimum) }
+        let n = max(1, Int((width + spacing) / (minimum + spacing)))
+        return (n, min(maximum, (width - spacing * CGFloat(n - 1)) / CGFloat(n)))
+    }
+
+    private func rowHeights(_ subviews: Subviews, columns: (count: Int, width: CGFloat)) -> [CGFloat] {
+        stride(from: 0, to: subviews.count, by: columns.count).map { start in
+            subviews[start..<min(start + columns.count, subviews.count)]
+                .map { $0.sizeThatFits(ProposedViewSize(width: columns.width, height: nil)).height }
+                .max() ?? 0
+        }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let layout = columns(width, count: subviews.count)
+        let heights = rowHeights(subviews, columns: layout)
+        let height = heights.reduce(0, +) + spacing * CGFloat(max(heights.count - 1, 0))
+        let used = CGFloat(min(layout.count, subviews.count)) * (layout.width + spacing) - spacing
+        return CGSize(width: width.isFinite ? width : max(used, 0), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let layout = columns(bounds.width, count: subviews.count)
+        let heights = rowHeights(subviews, columns: layout)
+        var y = bounds.minY
+        for (row, height) in heights.enumerated() {
+            for column in 0..<layout.count {
+                let index = row * layout.count + column
+                guard index < subviews.count else { break }
+                let x = bounds.minX + CGFloat(column) * (layout.width + spacing)
+                subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: layout.width, height: height))
+            }
+            y += height + spacing
+        }
     }
 }

@@ -86,8 +86,11 @@ final class AttachmentUITests: XCTestCase {
         let delete = app.menuItems["Delete…"]
         XCTAssertTrue(delete.waitForExistence(timeout: 5), "alice uploaded the PDF, so she can delete it")
         delete.click()
-        let confirm = app.buttons["Delete"].firstMatch
-        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "no confirmation")
+        // The sheet's button, not the Touch Bar's copy of it.
+        let inSheet = app.sheets.buttons["Delete"].firstMatch
+        let inDialog = app.dialogs.buttons["Delete"].firstMatch
+        let confirm = inSheet.waitForExistence(timeout: 5) ? inSheet : inDialog
+        XCTAssertTrue(confirm.waitForExistence(timeout: 2), "no confirmation: \(app.windows.debugDescription)")
         confirm.click()
         XCTAssertTrue(waitForNonExistence(of: tile, timeout: 5), "the PDF is still there")
     }
@@ -109,19 +112,19 @@ final class AttachmentUITests: XCTestCase {
         let field = element(app, "composer.field")
         XCTAssertTrue(field.waitForExistence(timeout: 5))
 
-        let image = NSImage(size: NSSize(width: 8, height: 8))
-        image.lockFocus()
-        NSColor.systemBlue.setFill()
-        NSRect(x: 0, y: 0, width: 8, height: 8).fill()
-        image.unlockFocus()
+        // Real PNG bytes, not an NSImage: an image's data is promised and read from this (test) process
+        // on demand, which is blocked in typeKey while the app asks for it.
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8, bitsPerSample: 8, samplesPerPixel: 4,
+                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let png = rep.representation(using: .png, properties: [:])!
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        XCTAssertTrue(pasteboard.writeObjects([image]))
+        XCTAssertTrue(pasteboard.setData(png, forType: .png))
 
         field.click()
         app.typeKey("v", modifierFlags: .command)
         let chip = element(app, "composer.chip")
-        XCTAssertTrue(chip.waitForExistence(timeout: 5), "no chip after ⌘V")
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), "no chip after ⌘V: \(element(app, "task.inspector").debugDescription)")
         let send = element(app, "composer.send")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: send)
         XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: 10), .completed, "Comment stayed disabled after the upload")
