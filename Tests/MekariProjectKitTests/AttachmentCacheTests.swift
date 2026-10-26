@@ -182,6 +182,60 @@ final class AttachmentCacheTests: XCTestCase {
     XCTAssertEqual(calls, 1)
   }
 
+  func testIDsThatArentUUIDsNeverNameAFolder() async throws {
+    let outside = directory.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: outside) }
+    var evil = try await seeded(DemoIDs.attachmentPDF)
+    evil.id = "../\(outside.lastPathComponent)"
+    let cache = cache()
+    do {
+      _ = try await cache.file(for: evil, using: fake)
+      XCTFail("expected a refusal")
+    } catch let error as APIError {
+      XCTAssertEqual(error.code, .validation)
+    }
+    let cached = await cache.cachedFile(for: evil.id)
+    XCTAssertNil(cached)
+    let calls = await downloads()
+    XCTAssertEqual(calls, 0, "refused before any request")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+  }
+
+  func testATamperedIndexCantDeleteOutsideAndPartFilesGo() async throws {
+    let pdf = try await seeded(DemoIDs.attachmentPDF)
+    _ = try await cache().file(for: pdf, using: fake)
+    let folder = directory.appendingPathComponent(pdf.id)
+    let part = folder.appendingPathComponent(".\(UUID().uuidString).part")
+    try Data("half".utf8).write(to: part)
+    let outside = directory.deletingLastPathComponent().appendingPathComponent("victim-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: outside) }
+    // An index entry pointing outside the cache.
+    var index = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("index.json"))) as! [String: Any]
+    index["../\(outside.lastPathComponent)"] = ["name": "x", "size": 1, "lastUsed": 0]
+    try JSONSerialization.data(withJSONObject: index).write(to: directory.appendingPathComponent("index.json"))
+
+    let reopened = cache(capacity: 1) // tiny: eviction runs over every entry on the next download
+    let text = try await seeded(DemoIDs.attachmentText)
+    _ = try await reopened.file(for: text, using: fake)
+    await reopened.wipe()
+    XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path), "nothing outside the cache is ever deleted")
+    XCTAssertFalse(FileManager.default.fileExists(atPath: part.path))
+  }
+
+  func testIsInsideRejectsLookalikesAndParents() async {
+    let cache = cache()
+    let inside = await cache.isInside(directory.appendingPathComponent("a/b"))
+    let parent = await cache.isInside(directory.appendingPathComponent("../x"))
+    let lookalike = await cache.isInside(URL(fileURLWithPath: directory.path + "-evil/x"))
+    let itself = await cache.isInside(directory)
+    XCTAssertTrue(inside)
+    XCTAssertFalse(parent)
+    XCTAssertFalse(lookalike)
+    XCTAssertFalse(itself)
+  }
+
   func testLinksCantBeDownloaded() async throws {
     let link = try await seeded(DemoIDs.attachmentLink)
     do {

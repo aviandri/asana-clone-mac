@@ -483,6 +483,20 @@ public actor FakeMekariAPI: MekariAPI {
   /// Every attachment in the fake (drafts included), for assertions.
   public func currentAttachments() -> [Attachment] { db.attachments }
 
+  /// Posts drafts as a comment by the signed-in user without going through `gate` (no hold, no failNext): the
+  /// server committing a request whose answer is then lost.
+  @discardableResult
+  public func addCommentDirectly(taskID: String, body: String = "", attachmentIDs: [String]) throws -> Comment {
+    let user = try requireUser()
+    let comment = Comment(id: newID(), author: summary(user)!, body: body, createdAt: Date())
+    for i in db.attachments.indices where attachmentIDs.contains(db.attachments[i].id) {
+      db.attachments[i].draft = false
+      db.attachments[i].commentId = comment.id
+    }
+    db.stories[taskID, default: []].append(.comment(comment))
+    return render(comment)
+  }
+
   public func uploadAttachment(taskID: String, file: URL, fileName: String?, draft: Bool,
                                progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> Attachment {
     let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)

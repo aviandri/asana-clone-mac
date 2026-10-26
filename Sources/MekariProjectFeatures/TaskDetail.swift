@@ -27,6 +27,7 @@ public final class TaskDetailStore {
   private var fetchedRole: (projectID: String, role: ProjectRole?)?
   /// Task-level uploads live at session scope, so they outlive this store's views.
   @ObservationIgnored private let uploadStore: AttachmentUploads
+  @ObservationIgnored private let uploadSlots: UploadSlots
   @ObservationIgnored private let workspaceID: String
 
   public convenience init(api: any MekariAPI, tasks: TaskCache, taskID: String, me: UserSummary, workspaceRole: WorkspaceRole,
@@ -46,6 +47,7 @@ public final class TaskDetailStore {
     self.workspaceRole = workspaceRole
     self.knownProject = knownProject
     uploadStore = uploads
+    uploadSlots = slots
     self.workspaceID = workspaceID
     composer = CommentComposer(api: api, taskID: taskID, users: UserSearch(api: api, clock: clock), slots: slots)
     composer.onSent = { [weak self] comment in
@@ -111,7 +113,7 @@ public final class TaskDetailStore {
   public func addLink(_ url: String, title: String?) async throws {
     let link = try validateLink(url).get()
     do {
-      attachmentAdded(try await api.addLink(taskID: taskID, url: link, title: title, draft: false))
+      attachmentAdded(try await uploadSlots.run { try await api.addLink(taskID: taskID, url: link, title: title, draft: false) })
     } catch is CancellationError {
       throw CancellationError()
     } catch {
@@ -154,7 +156,7 @@ public final class TaskDetailStore {
 
   public func refreshLinkPreview(_ id: String) async {
     do {
-      let refreshed = try await api.refreshLinkPreview(id)
+      let refreshed = try await uploadSlots.run { try await api.refreshLinkPreview(id) }
       tasks.editAttachments(taskID) { list in
         if let i = list.firstIndex(where: { $0.id == id }) { list[i] = refreshed }
       }
@@ -300,9 +302,10 @@ public final class TaskDetailStore {
     }
   }
 
+  /// The body may be empty only when the comment has attachments (A9).
   public func editComment(_ id: String, body: String) async {
     let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
+    guard !trimmed.isEmpty || !(comment(id)?.attachments.isEmpty ?? true) else { return }
     do {
       let edited = try await api.editComment(id, body: trimmed)
       stories = stories.map { story in
@@ -318,6 +321,8 @@ public final class TaskDetailStore {
     do {
       try await api.deleteComment(id)
       stories.removeAll { if case .comment(let c) = $0 { return c.id == id } else { return false } }
+      // The server deletes the comment's attachments with it.
+      tasks.editAttachments(taskID) { $0.removeAll { $0.commentId == id } }
     } catch {
       recordFailure(error, lastError: &lastError)
     }
@@ -421,10 +426,17 @@ public final class CommentComposer {
       onSent?(comment)
     } catch {
       recordFailure(error, lastError: &lastError)
-      // Chips discarded while they were being posted: the comment didn't take them, so their drafts go now.
+      // Chips discarded while they were being posted: if the comment didn't take them, their drafts go now. Only a
+      // definite HTTP rejection says so; after a transport failure the comment may have landed, so ask first.
       let orphaned = posted.filter { item in discardedWhileSending.contains(item.chip) }
       discardedWhileSending.subtract(orphaned.map(\.chip))
-      for item in orphaned { try? await api.deleteAttachment(item.attachment) }
+      let rejected = (error as? APIError).map { $0.status != nil } ?? false
+      for item in orphaned {
+        if !rejected {
+          guard let current = try? await api.attachment(item.attachment), current.commentId == nil, current.draft else { continue }
+        }
+        try? await api.deleteAttachment(item.attachment)
+      }
     }
   }
 
@@ -468,7 +480,7 @@ public final class CommentComposer {
                                 state: .uploading(TransferProgress(completed: 0, total: nil)))
     attachments.append(chip)
     do {
-      let attachment = try await api.addLink(taskID: taskID, url: link, title: title, draft: true)
+      let attachment = try await runner.slots.run { try await api.addLink(taskID: taskID, url: link, title: title, draft: true) }
       guard let i = attachments.firstIndex(where: { $0.id == chip.id }) else {
         // Removed (or discarded) while it was being added.
         try? await api.deleteAttachment(attachment.id)

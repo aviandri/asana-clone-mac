@@ -60,6 +60,8 @@ public actor AttachmentCache {
     guard attachment.kind == .file, let path = attachment.contentPath else {
       throw APIError(code: .validation, message: "Only files can be downloaded")
     }
+    // The id names a folder: anything but a UUID (e.g. "../../Documents") could point outside the cache.
+    guard AttachmentCache.isSafeID(attachment.id) else { throw APIError(code: .validation, message: "Not an attachment") }
     loadIndex()
     let id = attachment.id
     let task: Task<URL, Error>
@@ -122,7 +124,7 @@ public actor AttachmentCache {
     }
     guard started == generation else {
       // Wiped while downloading (sign-out, lost access): the bytes must not stay.
-      try? FileManager.default.removeItem(at: folder)
+      remove(folder)
       throw CancellationError()
     }
     switch outcome {
@@ -131,7 +133,7 @@ public actor AttachmentCache {
       return touch(id, cached)
     case .downloaded(let etag):
       if let cached, cached.name != destination.lastPathComponent {
-        try? FileManager.default.removeItem(at: folder.appendingPathComponent(cached.name))
+        remove(folder.appendingPathComponent(cached.name))
       }
       quarantine(destination)
       let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path)
@@ -151,12 +153,14 @@ public actor AttachmentCache {
 
   /// Cancels the download of `attachmentID` for every caller (they get `CancellationError`).
   public func cancelDownload(_ attachmentID: String) {
+    guard AttachmentCache.isSafeID(attachmentID) else { return }
     inFlight.removeValue(forKey: attachmentID)?.cancel()
     cancelledWaiters[attachmentID] = nil
   }
 
   /// The downloaded copy, if any (Show in Finder is offered only then).
   public func cachedFile(for attachmentID: String) -> URL? {
+    guard AttachmentCache.isSafeID(attachmentID) else { return nil }
     loadIndex()
     guard let entry = entries[attachmentID] else { return nil }
     let url = directory.appendingPathComponent(attachmentID, isDirectory: true).appendingPathComponent(entry.name)
@@ -172,7 +176,7 @@ public actor AttachmentCache {
     var total = entries.values.reduce(0) { $0 + $1.size }
     for (id, entry) in entries.sorted(by: { $0.value.lastUsed < $1.value.lastUsed }) where total > capacity {
       guard id != keep, inFlight[id] == nil else { continue }
-      try? FileManager.default.removeItem(at: directory.appendingPathComponent(id, isDirectory: true))
+      remove(directory.appendingPathComponent(id, isDirectory: true))
       entries[id] = nil
       total -= entry.size
     }
@@ -189,9 +193,19 @@ public actor AttachmentCache {
     if let data = try? Data(contentsOf: indexURL), let decoded = try? JSONDecoder().decode([String: Entry].self, from: data) {
       entries = decoded
     }
+    // An index entry must name a UUID folder and a plain file name (a tampered index can't point elsewhere).
+    entries = entries.filter { id, entry in
+      AttachmentCache.isSafeID(id) && entry.name == AttachmentLinks.safeFileName(entry.name)
+    }
     let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
     for name in names where name != "index.json" && entries[name] == nil {
-      try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+      remove(directory.appendingPathComponent(name))
+    }
+    // Half-written downloads (".<uuid>.part") a crash left behind in the folders we keep.
+    for id in entries.keys {
+      let folder = directory.appendingPathComponent(id, isDirectory: true)
+      let files = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+      for file in files where file.hasSuffix(".part") { remove(folder.appendingPathComponent(file)) }
     }
   }
 
@@ -239,6 +253,24 @@ public actor AttachmentCache {
     memoryOrder = []
     memoryBytes = 0
     try? FileManager.default.removeItem(at: directory)
+  }
+
+  /// Attachment ids are UUIDs; only those name folders here.
+  static func isSafeID(_ id: String) -> Bool {
+    UUID(uuidString: id) != nil && !id.contains("/")
+  }
+
+  /// Whether `url` (standardized) is strictly inside `directory`.
+  func isInside(_ url: URL) -> Bool {
+    let root = directory.standardizedFileURL.path
+    let target = url.standardizedFileURL.path
+    return target.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+  }
+
+  /// Removes `url` only if it sits inside the cache directory: nothing outside it is ever deleted.
+  private func remove(_ url: URL) {
+    guard isInside(url) else { return }
+    try? FileManager.default.removeItem(at: url)
   }
 }
 

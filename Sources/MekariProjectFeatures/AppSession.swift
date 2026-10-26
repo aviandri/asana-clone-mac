@@ -30,7 +30,7 @@ public final class WorkspaceScope: Identifiable {
   @ObservationIgnored private var projects: [String: ProjectStore] = [:]
   @ObservationIgnored private var details: [String: TaskDetailStore] = [:]
   @ObservationIgnored private let uploads: AttachmentUploads
-  @ObservationIgnored private let uploadSlots: UploadSlots
+  @ObservationIgnored let uploadSlots: UploadSlots
 
   public convenience init(api: any MekariAPI, workspace: Workspace, me: UserSummary, clock: any Clock<Duration> = ContinuousClock(),
                           calendar: Calendar = .current, now: @escaping () -> Date = Date.init, defaults: UserDefaults = .standard) {
@@ -172,7 +172,7 @@ public final class AppSession {
   public let attachmentCache: AttachmentCache
 
   @ObservationIgnored private let tokens: TokenStore
-  @ObservationIgnored private let uploadSlots: UploadSlots
+  @ObservationIgnored let uploadSlots: UploadSlots
   @ObservationIgnored private let apiFactory: @Sendable (URL, TokenStore) -> any MekariAPI
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored private let calendar: Calendar
@@ -239,11 +239,13 @@ public final class AppSession {
   /// Restores a saved session (`/auth/me`) or ends signed out.
   public func start() async {
     guard let server = settings.serverURL else {
+      await attachmentCache.wipe() // signed out: nothing from a previous session stays on disk
       state = .signedOut
       return
     }
     let api = makeAPI(server)
     guard await api.hasSession else {
+      await attachmentCache.wipe()
       state = .signedOut
       return
     }
@@ -255,6 +257,7 @@ public final class AppSession {
       let apiError = error.asAPIError
       // Offline at launch keeps the token for next time.
       signInError = apiError.code == .transport ? .transport : nil
+      await attachmentCache.wipe()
       state = .signedOut
     }
   }
@@ -305,6 +308,7 @@ public final class AppSession {
   public func signOut() async {
     let api = self.api
     endSession()
+    await pendingWipe?.value
     await api?.logout()
   }
 
@@ -404,12 +408,12 @@ public final class AppSession {
   private func recoverLostAccess(from workspaceID: String, request: Int) async {
     guard let api, workspaceID == current?.id else { return }
     let lostName = current?.name ?? "this workspace"
+    // Nothing from the lost workspace stays on disk or keeps uploading, whatever /auth/me says next.
+    uploads.cancel(workspaceID: workspaceID)
+    await attachmentCache.wipe()
     do {
       let me = try await api.me()
       guard request == switchRequest else { return }
-      // Nothing from the lost workspace stays on disk or keeps uploading.
-      uploads.cancel(workspaceID: workspaceID)
-      await attachmentCache.wipe()
       await adopt(me, api: api)
       notice = "You no longer have access to \(lostName)"
     } catch is CancellationError {

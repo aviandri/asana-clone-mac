@@ -72,7 +72,13 @@ public struct APIError: Error, Sendable, Hashable, LocalizedError {
       return APIError(code: Code(raw: envelope.error.code), status: status, message: envelope.error.message,
                       issues: envelope.error.details?.issues ?? [])
     }
-    return APIError(code: .unknown("HTTP \(status)"), status: status, message: "The server returned an error (HTTP \(status))")
+    // A proxy's HTML page (nginx 413, a gateway's 429/507) still means the same thing.
+    switch status {
+    case 413: return APIError(code: .payloadTooLarge, status: status, message: "The file is too large for the server (HTTP 413)")
+    case 429: return APIError(code: .rateLimited, status: status, message: "Too many requests. Try again in a moment.")
+    case 507: return APIError(code: .insufficientStorage, status: status, message: "The server is out of space (HTTP 507)")
+    default: return APIError(code: .unknown("HTTP \(status)"), status: status, message: "The server returned an error (HTTP \(status))")
+    }
   }
 
   private struct Envelope: Decodable {
