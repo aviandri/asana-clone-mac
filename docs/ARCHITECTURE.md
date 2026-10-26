@@ -590,6 +590,10 @@ public func submit() async                           // personal task assigned t
   against a freshly seeded BE: login/cookie, `/auth/me`, header + switch, lost access, my tasks,
   project tasks, create/patch/complete, comments, notifications, search, guest rules (W1, W7, W8).
   Locally they run against a throwaway BE DB, never the shared `asana` DB.
+- **Attachment contract tests** (`AttachmentContractTests`): draft upload then post, task-level upload, download +
+  304 revalidation, thumbnails, links, commenter rules, the local 100 MB pre-check and a raw 413. The 429 and 507
+  cases run only when `MP_BASE_URL_RATELIMIT` (a BE with `UPLOAD_RATE_LIMIT_MAX=3`) and `MP_BASE_URL_NOSPACE` (a BE
+  with a huge `STORAGE_MIN_FREE_BYTES`) are set.
 
 ## 6. Decisions
 

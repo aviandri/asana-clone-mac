@@ -1,4 +1,9 @@
+// Swift 5.10's Linux Foundation doesn't mark URL Sendable yet (Darwin's and Swift 6's do).
+#if canImport(FoundationNetworking) && compiler(<6.0)
+@preconcurrency import Foundation
+#else
 import Foundation
+#endif
 import MekariProjectKit
 import Observation
 
@@ -525,7 +530,7 @@ public final class CommentComposer {
         }
         return
       }
-      if case .uploading = state, !self.attachments[i].isActive || self.attachments[i].isFinishing { return }
+      if !self.attachments[i].accepts(state) { return }
       self.attachments[i].state = state
     }
   }

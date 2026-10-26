@@ -43,7 +43,7 @@ extension HTTPTransport {
 /// to wherever the server, a proxy or a captive portal points. The 3xx itself comes back as the response.
 public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
   private let session: URLSession
-  private let redirects = TransferDelegate()
+  private let redirects = RedirectRefusal()
 
   public init(timeout: TimeInterval = 30) {
     let configuration = URLSessionConfiguration.ephemeral
@@ -114,14 +114,6 @@ public final class URLSessionTransport: HTTPTransport, @unchecked Sendable {
   var delegate: URLSessionDelegate? { session.delegate }
 }
 
-/// Declines every redirect, so the task completes with the 3xx response.
-class RedirectRefusal: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-  func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
-                  newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-    completionHandler(nil)
-  }
-}
-
 /// One delegate-driven upload or download.
 final class Transfer: @unchecked Sendable {
   let progress: @Sendable (Int64, Int64?) -> Void
@@ -145,11 +137,20 @@ final class Transfer: @unchecked Sendable {
   static let maxErrorBody = 1 << 20
 }
 
-/// The session delegate: declines redirects (as `RedirectRefusal`) and drives uploads and downloads, keyed by
-/// task. Callbacks arrive on the session's serial delegate queue; `lock` guards the table against `register`.
-final class TransferDelegate: RedirectRefusal, URLSessionDataDelegate, @unchecked Sendable {
+/// The session delegate: declines every redirect (so the task completes with the 3xx response) and drives uploads
+/// and downloads, keyed by task. Callbacks arrive on the session's serial delegate queue; `lock` guards the table
+/// against `register`.
+///
+/// One final class on purpose: on Linux, Foundation calls delegate methods through the protocol witness table, so a
+/// subclass's implementation of a method its superclass left to the protocol's default is never called.
+final class RedirectRefusal: NSObject, URLSessionDataDelegate, @unchecked Sendable {
   private let lock = NSLock()
   private var transfers: [Int: Transfer] = [:]
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                  newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+    completionHandler(nil)
+  }
 
   func register(_ task: URLSessionTask, _ transfer: Transfer) {
     lock.locked { transfers[task.taskIdentifier] = transfer }

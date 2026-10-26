@@ -1,4 +1,9 @@
+// Swift 5.10's Linux Foundation doesn't mark URL Sendable yet (Darwin's and Swift 6's do).
+#if canImport(FoundationNetworking) && compiler(<6.0)
+@preconcurrency import Foundation
+#else
 import Foundation
+#endif
 import MekariProjectKit
 import Observation
 
@@ -66,6 +71,16 @@ public struct AttachmentUpload: Identifiable, Sendable, Hashable {
   }
 
   public var attachment: Attachment? { if case .finished(let a) = state { return a } else { return nil } }
+
+  /// Progress reports hop to the main actor on their own, so one can arrive after the outcome: it never
+  /// overwrites a finished or failed state, and "uploading" never takes "finishing" back.
+  func accepts(_ next: State) -> Bool {
+    switch next {
+    case .uploading: return isActive && !isFinishing
+    case .finishing: return isActive
+    case .queued, .finished, .failed: return true
+    }
+  }
 }
 
 /// At most `AttachmentLimits.maxConcurrentUploads` uploads at once across the app (A12), first come first served.
@@ -199,7 +214,7 @@ func validateLink(_ text: String) -> Result<String, APIError> {
 /// Finished uploads leave the list and are handed to `onFinished` (the current scope inserts them).
 @MainActor @Observable
 public final class AttachmentUploads {
-  public private(set) var all: [AttachmentUpload] = []
+  public internal(set) var all: [AttachmentUpload] = []
 
   @ObservationIgnored private let runner: UploadRunner
   @ObservationIgnored var api: () -> (any MekariAPI)?
@@ -275,8 +290,7 @@ public final class AttachmentUploads {
 
   private func update(_ id: UUID, _ state: AttachmentUpload.State) {
     guard let i = all.firstIndex(where: { $0.id == id }) else { return }
-    // A late progress report never overwrites the outcome, nor takes "finishing" back.
-    if case .uploading = state, !all[i].isActive || all[i].isFinishing { return }
+    if !all[i].accepts(state) { return }
     if case .finished(let attachment) = state {
       let upload = all.remove(at: i)
       workspaces[id] = nil

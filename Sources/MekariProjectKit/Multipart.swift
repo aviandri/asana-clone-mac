@@ -1,4 +1,9 @@
+// Swift 5.10's Linux Foundation doesn't mark URL Sendable yet (Darwin's and Swift 6's do).
+#if canImport(FoundationNetworking) && compiler(<6.0)
+@preconcurrency import Foundation
+#else
 import Foundation
+#endif
 
 /// The upload body: one multipart part `file`, written to a temp file so `uploadTask(fromFile:)` streams it.
 enum Multipart {
@@ -57,14 +62,19 @@ enum Multipart {
     }
   }
 
-  /// `form-data; name="file"; filename="<ASCII fallback>"; filename*=UTF-8''<percent-encoded>` (RFC 7578 / 5987).
+  /// `form-data; name="file"; filename="<UTF-8 name>"`, escaped the way browsers do (HTML's multipart/form-data
+  /// encoding: `"` → `%22`, CR → `%0D`, LF → `%0A`). The BE (busboy) reads `filename` as UTF-8 and ignores
+  /// `filename*`; the server sanitises the name again anyway.
   static func disposition(_ fileName: String) -> String {
-    let fallback = String(fileName.unicodeScalars.map { scalar -> Character in
-      scalar.isASCII && scalar.value >= 0x20 && scalar.value != 0x7F && scalar != "\"" && scalar != "\\" ? Character(scalar) : "_"
-    })
-    var allowed = CharacterSet.alphanumerics.intersection(CharacterSet(charactersIn: Unicode.Scalar(0)...Unicode.Scalar(127)))
-    allowed.insert(charactersIn: "!#$&+-.^_`|~")
-    let encoded = fileName.addingPercentEncoding(withAllowedCharacters: allowed) ?? fallback
-    return "form-data; name=\"file\"; filename=\"\(fallback)\"; filename*=UTF-8''\(encoded)"
+    var escaped = ""
+    for scalar in fileName.unicodeScalars {
+      switch scalar {
+      case "\"": escaped += "%22"
+      case "\r": escaped += "%0D"
+      case "\n": escaped += "%0A"
+      default: escaped.unicodeScalars.append(scalar)
+      }
+    }
+    return "form-data; name=\"file\"; filename=\"\(escaped)\""
   }
 }

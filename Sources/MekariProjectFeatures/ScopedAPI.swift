@@ -1,4 +1,9 @@
+// Swift 5.10's Linux Foundation doesn't mark URL Sendable yet (Darwin's and Swift 6's do).
+#if canImport(FoundationNetworking) && compiler(<6.0)
+@preconcurrency import Foundation
+#else
 import Foundation
+#endif
 import MekariProjectKit
 
 /// The API as one `WorkspaceScope` sees it. Once the scope is closed (a switch, lost access,
