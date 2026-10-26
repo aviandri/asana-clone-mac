@@ -26,54 +26,58 @@ struct TaskInspectorView: View {
                 // Before the first GET /tasks/:id, `task` is the list row's TaskItem (stale-while-
                 // revalidate): shown at once, read-only, with the rest loading in place.
                 let loaded = store.task != nil
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        ErrorBanner(error: store.lastError) { store.clearError() }
-                        header(task, loaded: loaded)
-                        fields(task)
-                        if loaded || !(task.description ?? "").isEmpty {
-                            DescriptionEditor(text: task.description ?? "", canEdit: store.canEdit) { text in
-                                guard canCommit else { return }
-                                Task { await store.setDescription(text.isEmpty ? nil : text) }
+                // The composer sits below the scroll view, not in a bottom safe-area inset: content scrolled under
+                // an inset still wins accessibility hit-testing there (VoiceOver's pointer, XCUITest found a
+                // tile "over" the comment field on macOS 15), so nothing may lie beneath the composer.
+                VStack(spacing: 0) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            ErrorBanner(error: store.lastError) { store.clearError() }
+                            header(task, loaded: loaded)
+                            fields(task)
+                            if loaded || !(task.description ?? "").isEmpty {
+                                DescriptionEditor(text: task.description ?? "", canEdit: store.canEdit) { text in
+                                    guard canCommit else { return }
+                                    Task { await store.setDescription(text.isEmpty ? nil : text) }
+                                }
+                            }
+                            if loaded {
+                                AttachmentsSection(context: attachmentContext, notice: dropNotice)
+                                SubtasksSection(store: store, subtasks: task.subtasks, onOpenTask: onOpenTask)
+                                FollowersSection(scope: scope, store: store, followers: task.followers)
+                                Divider()
+                                StoriesSection(stories: store.stories, me: scope.me, canDelete: { $0.author.id == scope.me.id },
+                                               attachmentContext: attachmentContext) { id in
+                                    Task { await store.deleteComment(id) }
+                                }
+                            } else {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Loading details…").foregroundStyle(.secondary)
+                                }
+                                .accessibilityElement(children: .combine)
+                                .accessibilityIdentifier("inspector.loadingDetails")
                             }
                         }
-                        if loaded {
-                            AttachmentsSection(context: attachmentContext, notice: dropNotice)
-                            SubtasksSection(store: store, subtasks: task.subtasks, onOpenTask: onOpenTask)
-                            FollowersSection(scope: scope, store: store, followers: task.followers)
-                            Divider()
-                            StoriesSection(stories: store.stories, me: scope.me, canDelete: { $0.author.id == scope.me.id },
-                                           attachmentContext: attachmentContext) { id in
-                                Task { await store.deleteComment(id) }
-                            }
-                        } else {
-                            HStack(spacing: 8) {
-                                ProgressView().controlSize(.small)
-                                Text("Loading details…").foregroundStyle(.secondary)
-                            }
-                            .accessibilityElement(children: .combine)
-                            .accessibilityIdentifier("inspector.loadingDetails")
+                        .padding(16)
+                    }
+                    .overlay {
+                        if dropTargeted {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                                .padding(4)
+                                .allowsHitTesting(false)
                         }
                     }
-                    .padding(16)
-                }
-                .overlay {
-                    if dropTargeted {
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-                            .padding(4)
-                            .allowsHitTesting(false)
+                    .onDrop(of: AttachmentDrop.types, isTargeted: Binding(get: { dropTargeted }, set: { dropTargeted = $0 && store.canAttach })) { providers in
+                        attachDropped(providers)
                     }
-                }
-                .onDrop(of: AttachmentDrop.types, isTargeted: Binding(get: { dropTargeted }, set: { dropTargeted = $0 && store.canAttach })) { providers in
-                    attachDropped(providers)
-                }
-                .background {
-                    PasteCatcher { responder in pasteIntoTask(firstResponder: responder) }
-                    .frame(width: 0, height: 0)
-                }
-                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    .background {
+                        PasteCatcher { responder in pasteIntoTask(firstResponder: responder) }
+                        .frame(width: 0, height: 0)
+                    }
                     if loaded {
+                        Divider()
                         CommentComposerView(composer: store.composer)
                             .padding(12)
                             .background(.bar)
