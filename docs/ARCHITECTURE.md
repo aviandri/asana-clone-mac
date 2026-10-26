@@ -880,6 +880,10 @@ public var canSend: Bool { get }                    // text or ≥ 1 finished ch
 //                 preview()/uiTest() use AttachmentCache.scratch() (a temp folder, no quarantine)
 ```
 
+- **Approved decisions (orchestrator, 2026-10-26):** (a) the cache lives in `<Caches>/com.mekari.project/Attachments`,
+  not `<Caches>/Attachments`: the app isn't sandboxed, and `wipe()` must only ever delete our own folder.
+  (b) Upload file names go as UTF-8 in `filename="…"` with the browsers' escaping (`"` → `%22`, CR/LF → `%0D`/`%0A`),
+  as the web upload does; the BE (busboy) ignores `filename*`. `AttachmentContractTests` round-trips "Ünïcødé 文件.pdf".
 - **Wipe rules:** sign-out (including a 401) and losing access to a workspace wipe the whole cache (disk and
   memory) and cancel the affected uploads. Composer drafts are cancelled when their scope closes; the server's
   sweeper removes unposted drafts after 24 h.

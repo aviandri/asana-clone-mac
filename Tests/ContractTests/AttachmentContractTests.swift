@@ -125,6 +125,25 @@ final class AttachmentContractTests: XCTestCase {
     XCTAssertFalse(storiesAfter.contains { $0.id == "comment-\(comment.id)" })
   }
 
+  /// Approved decision (b): UTF-8 in filename="…" round-trips: upload, GET /attachments/:id, the task, and the cache.
+  func testANonASCIIFileNameRoundTrips() async throws {
+    let (alice, _, _) = try await signIn("alice@example.com")
+    let task = try await newTask(alice)
+    let name = "Ünïcødé 文件.pdf"
+    let pdf = Data("%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n".utf8)
+    let uploaded = try await alice.uploadAttachment(taskID: task.id, file: try file("plain.pdf", pdf), fileName: name, draft: false) { _ in }
+    XCTAssertEqual(uploaded.name, name)
+    let fetched = try await alice.attachment(uploaded.id)
+    XCTAssertEqual(fetched.name, name)
+    XCTAssertEqual(fetched.mimeType, "application/pdf")
+    let detail = try await alice.task(task.id)
+    XCTAssertEqual(detail.attachments.first?.name, name)
+    let cache = AttachmentCache(directory: scratch.appendingPathComponent("cache"), quarantine: { _ in })
+    let local = try await cache.file(for: fetched, using: alice)
+    XCTAssertEqual(local.lastPathComponent, name)
+    XCTAssertEqual(try Data(contentsOf: local), pdf)
+  }
+
   func testTaskLevelUploadDownloadRevalidateAndThumbnails() async throws {
     let (alice, _, _) = try await signIn("alice@example.com")
     let task = try await newTask(alice)
