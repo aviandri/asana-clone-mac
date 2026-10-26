@@ -141,7 +141,7 @@ final class AttachmentUITests: XCTestCase {
         let send = element(app, "composer.send")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: send)
         XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: 10), .completed, "Comment stayed disabled after the upload")
-        send.click()
+        send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()   // "not hittable" there too
         XCTAssertTrue(waitForNonExistence(of: chip, timeout: 10), "the chip didn't go with the comment")
     }
 }
