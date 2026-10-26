@@ -6,6 +6,7 @@ public enum FakeEndpoint: String, Sendable, Hashable, CaseIterable {
   case createSection, updateSection, deleteSection, myTasks, task, createTask, updateTask, deleteTask
   case addFollower, removeFollower, stories, addComment, editComment, deleteComment
   case notifications, markRead, markAllRead, search
+  case uploadAttachment, addLink, attachment, refreshLinkPreview, deleteAttachment, download, attachmentData
 }
 
 public struct FakeCall: Sendable, Hashable {
@@ -354,14 +355,25 @@ public actor FakeMekariAPI: MekariAPI {
   public func stories(taskID: String) async throws -> [Story] {
     try await gate(.stories, scoped: false)
     _ = try visibleTask(taskID)
-    return (db.stories[taskID] ?? []).sorted { $0.createdAt < $1.createdAt }
+    return (db.stories[taskID] ?? []).sorted { $0.createdAt < $1.createdAt }.map { story in
+      if case .comment(let comment) = story { return .comment(render(comment)) }
+      return story
+    }
   }
 
-  public func addComment(taskID: String, body: String) async throws -> Comment {
+  public func addComment(taskID: String, body: String, attachmentIDs: [String]) async throws -> Comment {
     try await gate(.addComment, scoped: false)
     let user = try requireUser()
     let (task, _) = try visibleTask(taskID)
-    let comment = Comment(id: newID(), author: summary(user)!, body: try nonEmpty(body, "body"), createdAt: Date())
+    guard attachmentIDs.count <= AttachmentLimits.maxPerComment else { throw validation("attachmentIds", "At most 20 attachments") }
+    let ids = Set(attachmentIDs)
+    // BE: each must be a draft I uploaded on this task.
+    guard ids.allSatisfy({ id in db.attachments.contains { $0.id == id && $0.draft && $0.uploader.id == user && $0.taskId == taskID } }) else {
+      throw validation("attachmentIds", "Attachments must be your drafts on this task")
+    }
+    let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    if ids.isEmpty { _ = try nonEmpty(body, "body") }
+    let comment = Comment(id: newID(), author: summary(user)!, body: text, createdAt: Date())
     let mentioned = comment.segments.compactMap { segment -> String? in
       if case .mention(_, let id) = segment { return id }
       return nil
@@ -370,11 +382,15 @@ public actor FakeMekariAPI: MekariAPI {
     if mentioned.contains(where: { activeMembership($0, task.workspaceId) == nil }) {
       throw validation("body", "Only members of this workspace can be mentioned")
     }
+    for i in db.attachments.indices where ids.contains(db.attachments[i].id) {
+      db.attachments[i].draft = false
+      db.attachments[i].commentId = comment.id
+    }
     db.stories[taskID, default: []].append(.comment(comment))
     notify(mentioned, .mentioned, actor: user, task: task)
     notify((db.followers[taskID] ?? []).filter { !mentioned.contains($0) }, .commented, actor: user, task: task)
     db.followers[taskID] = Array(Set((db.followers[taskID] ?? []) + [user])).sorted()
-    return comment
+    return render(comment)
   }
 
   public func editComment(_ id: String, body: String) async throws -> Comment {
@@ -383,10 +399,12 @@ public actor FakeMekariAPI: MekariAPI {
     let (taskID, comment) = try findComment(id)
     guard comment.author.id == user else { throw APIError(code: .forbidden, status: 403, message: "Only the author can edit a comment") }
     var edited = comment
-    edited.body = try nonEmpty(body, "body")
+    // A9: the body may be empty when the comment has attachments.
+    let hasAttachments = db.attachments.contains { $0.commentId == id }
+    edited.body = hasAttachments ? body.trimmingCharacters(in: .whitespacesAndNewlines) : try nonEmpty(body, "body")
     edited.editedAt = Date()
     replaceComment(taskID, id) { _ in .comment(edited) }
-    return edited
+    return render(edited)
   }
 
   public func deleteComment(_ id: String) async throws {
@@ -399,6 +417,7 @@ public actor FakeMekariAPI: MekariAPI {
       throw APIError(code: .forbidden, status: 403, message: "Only the author or an admin can delete a comment")
     }
     replaceComment(taskID, id) { _ in nil }
+    db.attachments.removeAll { $0.commentId == id }
   }
 
   // MARK: - Inbox & search
@@ -443,6 +462,170 @@ public actor FakeMekariAPI: MekariAPI {
     return SearchResults(tasks: Array(tasks.prefix(10)).map(render),
                          projects: Array(projects.filter { $0.project.name.lowercased().contains(q) }.prefix(10)).map { render($0, for: user) },
                          users: Array(people.prefix(10)).map(\.user))
+  }
+
+  // MARK: - Attachments & links
+
+  /// Every byte path serves these (the fake has no real files): a 1×1 PNG for images, else the name's bytes.
+  public static let pngBytes = Data([
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+    0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0, 0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99, 0x3D, 0x1D, 0x00, 0x00,
+    0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+  ])
+  private var blobs: [String: Data] = [:]
+
+  /// Every attachment in the fake (drafts included), for assertions.
+  public func currentAttachments() -> [Attachment] { db.attachments }
+
+  public func uploadAttachment(taskID: String, file: URL, fileName: String?, draft: Bool,
+                               progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> Attachment {
+    let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
+    guard let size = (attributes?[.size] as? NSNumber)?.int64Value else { throw validation("file", "Can't read that file") }
+    guard size <= AttachmentLimits.maxUploadBytes else { throw AttachmentLimits.tooLarge() }
+    try await gate(.uploadAttachment, scoped: false)
+    let user = try requireUser()
+    let (task, _) = try visibleTask(taskID)
+    if !draft { try requireEditTask(task, user: user) }
+    progress(TransferProgress(completed: 0, total: size))
+    let name = AttachmentLinks.safeFileName(fileName ?? file.lastPathComponent)
+    let mime = FakeMekariAPI.mimeType(for: name)
+    let id = newID()
+    let isImage = mime.hasPrefix("image/")
+    let base = "/api/v1/attachments/\(id)"
+    let attachment = Attachment(id: id, workspaceId: task.workspaceId, taskId: taskID, kind: .file, draft: draft,
+                                uploader: summary(user)!, createdAt: Date(), name: name, mimeType: mime, size: size,
+                                width: isImage ? 1 : nil, height: isImage ? 1 : nil, hasThumbnail: isImage,
+                                contentPath: base + "/content", thumbnailPath: isImage ? base + "/thumbnail" : nil)
+    if size <= 1 << 20 { blobs[id] = try? Data(contentsOf: file) }
+    db.attachments.append(attachment)
+    if !draft { taskLevelAdded(attachment, by: user) }
+    progress(TransferProgress(completed: size, total: size))
+    return attachment
+  }
+
+  public func addLink(taskID: String, url: String, title: String?, draft: Bool) async throws -> Attachment {
+    try await gate(.addLink, scoped: false)
+    let user = try requireUser()
+    let (task, _) = try visibleTask(taskID)
+    if !draft { try requireEditTask(task, user: user) }
+    guard url.count <= 2048, let parsed = AttachmentLinks.openable(url), parsed.user == nil, parsed.password == nil else {
+      throw validation("url", "Enter an http(s) link")
+    }
+    let host = parsed.host?.lowercased() ?? ""
+    let cleanTitle = title.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : $0 }
+    let attachment = Attachment(id: newID(), workspaceId: task.workspaceId, taskId: taskID, kind: .link, draft: draft,
+                                uploader: summary(user)!, createdAt: Date(), url: url.trimmingCharacters(in: .whitespacesAndNewlines),
+                                title: cleanTitle ?? host, siteName: host, provider: host.contains("figma.com") ? "figma" : nil,
+                                previewStatus: .ready)
+    db.attachments.append(attachment)
+    if !draft { taskLevelAdded(attachment, by: user) }
+    return attachment
+  }
+
+  public func attachment(_ id: String) async throws -> Attachment {
+    try await gate(.attachment, scoped: false)
+    return try visibleAttachment(id)
+  }
+
+  public func refreshLinkPreview(_ id: String) async throws -> Attachment {
+    try await gate(.refreshLinkPreview, scoped: false)
+    let attachment = try visibleAttachment(id)
+    guard attachment.kind == .link else { throw validation("id", "Not a link") }
+    return attachment
+  }
+
+  public func deleteAttachment(_ id: String) async throws {
+    try await gate(.deleteAttachment, scoped: false)
+    let user = try requireUser()
+    let attachment = try visibleAttachment(id)
+    guard let task = db.tasks.first(where: { $0.id == attachment.taskId }) else { throw notFound("Attachment") }
+    let isAdmin = activeMembership(user, task.workspaceId)?.role == .admin
+    let allowed: Bool
+    if let projectID = task.projectId {
+      let owner = db.projects.first { $0.project.id == projectID }?.members.first { $0.user.id == user }?.role == .owner
+      allowed = attachment.uploader.id == user || owner || isAdmin
+    } else {
+      allowed = attachment.uploader.id == user || task.creator.id == user || isAdmin // A7
+    }
+    guard allowed else { throw APIError(code: .forbidden, status: 403, message: "You can't delete this attachment") }
+    db.attachments.removeAll { $0.id == id }
+    blobs[id] = nil
+    if let commentID = attachment.commentId {
+      // A comment that was only this attachment goes with it.
+      if case .comment(let comment)? = (db.stories[task.id] ?? []).first(where: { $0.id == "comment-\(commentID)" }),
+         comment.body.isEmpty, !db.attachments.contains(where: { $0.commentId == commentID }) {
+        replaceComment(task.id, commentID) { _ in nil }
+      }
+    } else if !attachment.draft {
+      appendActivity(task.id, actor: user, .attachmentRemoved,
+                     data: .object(["kind": .string(attachment.kind.rawValue), "name": .string(attachment.displayName)]))
+    }
+  }
+
+  public func download(_ path: String, to destination: URL, ifNoneMatch etag: String?,
+                       progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> DownloadOutcome {
+    try await gate(.download, scoped: false)
+    let (attachment, data) = try bytes(path)
+    let current = "\"fake-\(attachment.id)\""
+    if etag == current { return .notModified }
+    do {
+      try data.write(to: destination, options: .atomic)
+    } catch {
+      throw APIError(code: .unknown("client"), message: "Couldn't save the file")
+    }
+    progress(TransferProgress(completed: Int64(data.count), total: Int64(data.count)))
+    return .downloaded(etag: current)
+  }
+
+  public func attachmentData(_ path: String) async throws -> Data {
+    try await gate(.attachmentData, scoped: false)
+    return try bytes(path).1
+  }
+
+  private func bytes(_ path: String) throws -> (Attachment, Data) {
+    guard AttachmentLinks.isAttachmentPath(path) else { throw APIError(code: .validation, message: "Not an attachment address") }
+    let rest = path.dropFirst(AttachmentLinks.pathPrefix.count)
+    let id = String(rest.prefix { $0 != "/" && $0 != "?" })
+    let what = rest.dropFirst(id.count).split(separator: "?").first.map(String.init) ?? ""
+    let attachment = try visibleAttachment(id)
+    switch what {
+    case "/content":
+      if let blob = blobs[id] { return (attachment, blob) }
+      return (attachment, attachment.isImage ? FakeMekariAPI.pngBytes : Data((attachment.name ?? "file").utf8))
+    case "/thumbnail" where attachment.hasThumbnail, "/icon" where attachment.hasIcon, "/image" where attachment.hasImage:
+      return (attachment, FakeMekariAPI.pngBytes)
+    default:
+      throw notFound("Attachment")
+    }
+  }
+
+  /// Visible iff I can see the task; drafts only to their uploader (BE §13).
+  private func visibleAttachment(_ id: String) throws -> Attachment {
+    let user = try requireUser()
+    guard let attachment = db.attachments.first(where: { $0.id == id }), !attachment.draft || attachment.uploader.id == user,
+          (try? visibleTask(attachment.taskId)) != nil else { throw notFound("Attachment") }
+    return attachment
+  }
+
+  private func taskLevelAdded(_ attachment: Attachment, by user: String) {
+    appendActivity(attachment.taskId, actor: user, .attachmentAdded, data: .object([
+      "attachmentId": .string(attachment.id), "kind": .string(attachment.kind.rawValue), "name": .string(attachment.displayName),
+    ]))
+    if let i = db.tasks.firstIndex(where: { $0.id == attachment.taskId }) { db.tasks[i].updatedAt = Date() }
+  }
+
+  static func mimeType(for name: String) -> String {
+    switch (name as NSString).pathExtension.lowercased() {
+    case "png": return "image/png"
+    case "jpg", "jpeg": return "image/jpeg"
+    case "gif": return "image/gif"
+    case "webp": return "image/webp"
+    case "pdf": return "application/pdf"
+    case "txt", "md", "csv", "json", "log": return "text/plain"
+    case "mp4": return "video/mp4"
+    default: return "application/octet-stream"
+    }
   }
 
   // MARK: - Rules
@@ -599,7 +782,14 @@ public actor FakeMekariAPI: MekariAPI {
     t.completedSubtaskCount = subtasks.filter(\.completed).count
     t.commentCount = (db.stories[task.id] ?? []).filter { if case .comment = $0 { return true } else { return false } }.count
     t.project = task.projectId.flatMap { id in db.projects.first { $0.project.id == id }?.project.ref }
+    t.attachmentCount = db.attachments.filter { $0.taskId == task.id && !$0.draft }.count
     return t
+  }
+
+  private func render(_ comment: Comment) -> Comment {
+    var c = comment
+    c.attachments = db.attachments.filter { $0.commentId == comment.id && !$0.draft }.sorted { $0.createdAt < $1.createdAt }
+    return c
   }
 
   private func detail(_ task: TaskItem) -> TaskDetail {
@@ -607,7 +797,8 @@ public actor FakeMekariAPI: MekariAPI {
     return TaskDetail(task: render(current),
                       followers: (db.followers[task.id] ?? []).compactMap(summary).sorted { $0.name < $1.name },
                       subtasks: db.tasks.filter { $0.parentId == task.id }.sorted { $0.position < $1.position }.map(render),
-                      parent: current.parentId.flatMap { id in db.tasks.first { $0.id == id } }.map { TaskParentRef(id: $0.id, title: $0.title) })
+                      parent: current.parentId.flatMap { id in db.tasks.first { $0.id == id } }.map { TaskParentRef(id: $0.id, title: $0.title) },
+                      attachments: db.attachments.filter { $0.taskId == task.id && !$0.draft }.sorted { $0.createdAt > $1.createdAt })
   }
 
   private func summary(_ id: String) -> UserSummary? {

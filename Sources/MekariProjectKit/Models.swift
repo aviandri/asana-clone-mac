@@ -158,6 +158,13 @@ public enum ActivityType: OpenEnum, CaseIterable {
   }
 }
 
+extension ActivityType {
+  // BE §13. Kept as `.other` values so existing exhaustive switches still compile; match them with
+  // `case ActivityType.attachmentAdded:`. `data`: `{attachmentId, kind, name}` / `{kind, name}`.
+  public static let attachmentAdded = ActivityType.other("ATTACHMENT_ADDED")
+  public static let attachmentRemoved = ActivityType.other("ATTACHMENT_REMOVED")
+}
+
 // MARK: - Users & workspaces
 
 public struct UserSummary: Codable, Sendable, Hashable, Identifiable {
@@ -440,6 +447,8 @@ public struct TaskItem: Codable, Sendable, Hashable, Identifiable {
   public var subtaskCount: Int
   public var completedSubtaskCount: Int
   public var commentCount: Int
+  /// Non-draft attachments on the task and its comments (BE §13). 0 from servers before v1.3.
+  public var attachmentCount: Int
   public var project: ProjectRef?
   public var createdAt: Date
   public var updatedAt: Date
@@ -448,7 +457,7 @@ public struct TaskItem: Codable, Sendable, Hashable, Identifiable {
               title: String, description: String? = nil, assignee: UserSummary? = nil, creator: UserSummary,
               dueDate: LocalDate? = nil, startDate: LocalDate? = nil, priority: Priority = .none, completed: Bool = false,
               completedAt: Date? = nil, position: Double = 1000, subtaskCount: Int = 0, completedSubtaskCount: Int = 0,
-              commentCount: Int = 0, project: ProjectRef? = nil, createdAt: Date, updatedAt: Date) {
+              commentCount: Int = 0, attachmentCount: Int = 0, project: ProjectRef? = nil, createdAt: Date, updatedAt: Date) {
     self.id = id
     self.workspaceId = workspaceId
     self.projectId = projectId
@@ -467,6 +476,7 @@ public struct TaskItem: Codable, Sendable, Hashable, Identifiable {
     self.subtaskCount = subtaskCount
     self.completedSubtaskCount = completedSubtaskCount
     self.commentCount = commentCount
+    self.attachmentCount = attachmentCount
     self.project = project
     self.createdAt = createdAt
     self.updatedAt = updatedAt
@@ -475,8 +485,34 @@ public struct TaskItem: Codable, Sendable, Hashable, Identifiable {
   // Optional fields are always present in BE JSON (as null); encode them that way too.
   private enum CodingKeys: String, CodingKey {
     case id, workspaceId, projectId, sectionId, parentId, title, description, assignee, creator, dueDate, startDate
-    case priority, completed, completedAt, position, subtaskCount, completedSubtaskCount, commentCount, project
-    case createdAt, updatedAt
+    case priority, completed, completedAt, position, subtaskCount, completedSubtaskCount, commentCount, attachmentCount
+    case project, createdAt, updatedAt
+  }
+
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    workspaceId = try c.decode(String.self, forKey: .workspaceId)
+    projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
+    sectionId = try c.decodeIfPresent(String.self, forKey: .sectionId)
+    parentId = try c.decodeIfPresent(String.self, forKey: .parentId)
+    title = try c.decode(String.self, forKey: .title)
+    description = try c.decodeIfPresent(String.self, forKey: .description)
+    assignee = try c.decodeIfPresent(UserSummary.self, forKey: .assignee)
+    creator = try c.decode(UserSummary.self, forKey: .creator)
+    dueDate = try c.decodeIfPresent(LocalDate.self, forKey: .dueDate)
+    startDate = try c.decodeIfPresent(LocalDate.self, forKey: .startDate)
+    priority = try c.decode(Priority.self, forKey: .priority)
+    completed = try c.decode(Bool.self, forKey: .completed)
+    completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+    position = try c.decode(Double.self, forKey: .position)
+    subtaskCount = try c.decode(Int.self, forKey: .subtaskCount)
+    completedSubtaskCount = try c.decode(Int.self, forKey: .completedSubtaskCount)
+    commentCount = try c.decode(Int.self, forKey: .commentCount)
+    attachmentCount = try c.decodeIfPresent(Int.self, forKey: .attachmentCount) ?? 0
+    project = try c.decodeIfPresent(ProjectRef.self, forKey: .project)
+    createdAt = try c.decode(Date.self, forKey: .createdAt)
+    updatedAt = try c.decode(Date.self, forKey: .updatedAt)
   }
 
   public func encode(to encoder: Encoder) throws {
@@ -499,6 +535,7 @@ public struct TaskItem: Codable, Sendable, Hashable, Identifiable {
     try c.encode(subtaskCount, forKey: .subtaskCount)
     try c.encode(completedSubtaskCount, forKey: .completedSubtaskCount)
     try c.encode(commentCount, forKey: .commentCount)
+    try c.encode(attachmentCount, forKey: .attachmentCount)
     try c.encode(project, forKey: .project)
     try c.encode(createdAt, forKey: .createdAt)
     try c.encode(updatedAt, forKey: .updatedAt)
@@ -522,12 +559,16 @@ public struct TaskDetail: Sendable, Hashable, Identifiable {
   public var followers: [UserSummary]
   public var subtasks: [TaskItem]
   public var parent: TaskParentRef?
+  /// Task-level and comment attachments, newest first (BE §13). Empty from servers before v1.3.
+  public var attachments: [Attachment]
 
-  public init(task: TaskItem, followers: [UserSummary] = [], subtasks: [TaskItem] = [], parent: TaskParentRef? = nil) {
+  public init(task: TaskItem, followers: [UserSummary] = [], subtasks: [TaskItem] = [], parent: TaskParentRef? = nil,
+              attachments: [Attachment] = []) {
     self.task = task
     self.followers = followers
     self.subtasks = subtasks
     self.parent = parent
+    self.attachments = attachments
   }
 
   public var id: String { task.id }
@@ -535,13 +576,14 @@ public struct TaskDetail: Sendable, Hashable, Identifiable {
 }
 
 extension TaskDetail: Codable {
-  private enum Keys: String, CodingKey { case followers, subtasks, parent }
+  private enum Keys: String, CodingKey { case followers, subtasks, parent, attachments }
   public init(from decoder: Decoder) throws {
     task = try TaskItem(from: decoder)
     let container = try decoder.container(keyedBy: Keys.self)
     followers = try container.decode([UserSummary].self, forKey: .followers)
     subtasks = try container.decode([TaskItem].self, forKey: .subtasks)
     parent = try container.decodeIfPresent(TaskParentRef.self, forKey: .parent)
+    attachments = try container.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
   }
   public func encode(to encoder: Encoder) throws {
     try task.encode(to: encoder)
@@ -549,6 +591,7 @@ extension TaskDetail: Codable {
     try container.encode(followers, forKey: .followers)
     try container.encode(subtasks, forKey: .subtasks)
     try container.encode(parent, forKey: .parent)
+    try container.encode(attachments, forKey: .attachments)
   }
 }
 

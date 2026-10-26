@@ -66,7 +66,9 @@ final class ScopedAPI: MekariAPI, @unchecked Sendable {
     try check(); return try await base.removeFollower(taskID: taskID, userID: userID)
   }
   func stories(taskID: String) async throws -> [Story] { try check(); return try await base.stories(taskID: taskID) }
-  func addComment(taskID: String, body: String) async throws -> Comment { try check(); return try await base.addComment(taskID: taskID, body: body) }
+  func addComment(taskID: String, body: String, attachmentIDs: [String]) async throws -> Comment {
+    try check(); return try await base.addComment(taskID: taskID, body: body, attachmentIDs: attachmentIDs)
+  }
   func editComment(_ id: String, body: String) async throws -> Comment { try check(); return try await base.editComment(id, body: body) }
   func deleteComment(_ id: String) async throws { try check(); try await base.deleteComment(id) }
   func notifications(unreadOnly: Bool, limit: Int) async throws -> InboxPage {
@@ -75,4 +77,19 @@ final class ScopedAPI: MekariAPI, @unchecked Sendable {
   func markRead(_ notificationID: String) async throws { try check(); try await base.markRead(notificationID) }
   func markAllRead() async throws { try check(); try await base.markAllRead() }
   func search(_ query: String) async throws -> SearchResults { try check(); return try await base.search(query) }
+  func uploadAttachment(taskID: String, file: URL, fileName: String?, draft: Bool,
+                        progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> Attachment {
+    try check(); return try await base.uploadAttachment(taskID: taskID, file: file, fileName: fileName, draft: draft, progress: progress)
+  }
+  func addLink(taskID: String, url: String, title: String?, draft: Bool) async throws -> Attachment {
+    try check(); return try await base.addLink(taskID: taskID, url: url, title: title, draft: draft)
+  }
+  func attachment(_ id: String) async throws -> Attachment { try check(); return try await base.attachment(id) }
+  func refreshLinkPreview(_ id: String) async throws -> Attachment { try check(); return try await base.refreshLinkPreview(id) }
+  func deleteAttachment(_ id: String) async throws { try check(); try await base.deleteAttachment(id) }
+  func download(_ path: String, to destination: URL, ifNoneMatch etag: String?,
+                progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> DownloadOutcome {
+    try check(); return try await base.download(path, to: destination, ifNoneMatch: etag, progress: progress)
+  }
+  func attachmentData(_ path: String) async throws -> Data { try check(); return try await base.attachmentData(path) }
 }

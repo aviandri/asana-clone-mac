@@ -16,16 +16,32 @@ public final class WorkspaceScope: Identifiable {
   public let search: SearchStore
   public let quickAdd: QuickAddModel
   public let completionFeedback: CompletionFeedback
+  /// Downloads and thumbnails for this workspace (through the session's cache).
+  public let attachmentFiles: AttachmentFiles
 
   /// Every request from this scope; refused once the scope is closed (see `ScopedAPI`).
   @ObservationIgnored private let api: ScopedAPI
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored private var projects: [String: ProjectStore] = [:]
   @ObservationIgnored private var details: [String: TaskDetailStore] = [:]
+  @ObservationIgnored private let uploads: AttachmentUploads
+  @ObservationIgnored private let uploadSlots: UploadSlots
 
-  public init(api: any MekariAPI, workspace: Workspace, me: UserSummary, clock: any Clock<Duration> = ContinuousClock(),
-              calendar: Calendar = .current, now: @escaping () -> Date = Date.init, defaults: UserDefaults = .standard) {
+  public convenience init(api: any MekariAPI, workspace: Workspace, me: UserSummary, clock: any Clock<Duration> = ContinuousClock(),
+                          calendar: Calendar = .current, now: @escaping () -> Date = Date.init, defaults: UserDefaults = .standard) {
+    let slots = UploadSlots()
+    self.init(api: api, workspace: workspace, me: me, clock: clock, calendar: calendar, now: now, defaults: defaults,
+              uploads: AttachmentUploads(slots: slots, api: { api }), slots: slots,
+              cache: AttachmentCache(directory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("MekariProjectAttachments-\(UUID().uuidString)")))
+  }
+
+  init(api: any MekariAPI, workspace: Workspace, me: UserSummary, clock: any Clock<Duration>, calendar: Calendar,
+       now: @escaping () -> Date, defaults: UserDefaults, uploads: AttachmentUploads, slots: UploadSlots, cache: AttachmentCache) {
     let api = ScopedAPI(api)
+    self.uploads = uploads
+    uploadSlots = slots
+    attachmentFiles = AttachmentFiles(api: api, cache: cache)
     self.api = api
     self.clock = clock
     id = workspace.id
@@ -55,6 +71,20 @@ public final class WorkspaceScope: Identifiable {
   func close() {
     api.close()
     poller.stop()
+    details.values.forEach { $0.composer.cancelUploads() }
+  }
+
+  /// A task-level upload finished (possibly after its task was closed): show it if the task is loaded here.
+  func attachmentUploaded(_ attachment: Attachment) {
+    guard attachment.workspaceId == id, !isClosed else { return }
+    if let store = details[attachment.taskId] {
+      store.attachmentAdded(attachment)
+    } else {
+      tasks.editAttachments(attachment.taskId, bumpedAt: attachment.createdAt) { list in
+        list.removeAll { $0.id == attachment.id }
+        list.append(attachment)
+      }
+    }
   }
 
   /// One store per project, kept for the life of the scope.
@@ -69,7 +99,8 @@ public final class WorkspaceScope: Identifiable {
   public func taskDetail(_ id: String) -> TaskDetailStore {
     if let store = details[id] { return store }
     let store = TaskDetailStore(api: api, tasks: tasks, taskID: id, me: me, workspaceRole: workspace.myRole, clock: clock,
-                                knownProject: { [weak self] projectID in self?.sidebar.projects.first { $0.id == projectID } })
+                                knownProject: { [weak self] projectID in self?.sidebar.projects.first { $0.id == projectID } },
+                                uploads: uploads, slots: uploadSlots, workspaceID: self.id)
     details[id] = store
     return store
   }
@@ -130,8 +161,13 @@ public final class AppSession {
   /// queued one commits or fails: show progress, hold off edits.
   public private(set) var isSwitching = false
   public let settings: ServerSettings
+  /// Task-level uploads, kept across inspector/window closes and workspace switches (keyed by task).
+  public let uploads: AttachmentUploads
+  /// Downloads on disk and thumbnails in memory; wiped on sign-out and on losing a workspace.
+  public let attachmentCache: AttachmentCache
 
   @ObservationIgnored private let tokens: TokenStore
+  @ObservationIgnored private let uploadSlots: UploadSlots
   @ObservationIgnored private let apiFactory: @Sendable (URL, TokenStore) -> any MekariAPI
   @ObservationIgnored private let clock: any Clock<Duration>
   @ObservationIgnored private let calendar: Calendar
@@ -151,13 +187,20 @@ public final class AppSession {
   @ObservationIgnored private var serverWorkspaceID: String?
 
   public init(settings: ServerSettings, tokens: TokenStore, apiFactory: @escaping @Sendable (URL, TokenStore) -> any MekariAPI,
-              clock: any Clock<Duration> = ContinuousClock(), calendar: Calendar = .current, now: @escaping () -> Date = Date.init) {
+              clock: any Clock<Duration> = ContinuousClock(), calendar: Calendar = .current, now: @escaping () -> Date = Date.init,
+              attachmentCache: AttachmentCache = AttachmentCache(directory: AttachmentCache.defaultDirectory())) {
     self.settings = settings
     self.tokens = tokens
     self.apiFactory = apiFactory
     self.clock = clock
     self.calendar = calendar
     self.now = now
+    self.attachmentCache = attachmentCache
+    let slots = UploadSlots()
+    uploadSlots = slots
+    uploads = AttachmentUploads(slots: slots, api: { nil })
+    uploads.api = { [weak self] in self?.api }
+    uploads.onFinished = { [weak self] attachment in self?.scope?.attachmentUploaded(attachment) }
   }
 
   // MARK: - Workspaces
@@ -359,6 +402,9 @@ public final class AppSession {
     do {
       let me = try await api.me()
       guard request == switchRequest else { return }
+      // Nothing from the lost workspace stays on disk or keeps uploading.
+      uploads.cancel(workspaceID: workspaceID)
+      await attachmentCache.wipe()
       await adopt(me, api: api)
       notice = "You no longer have access to \(lostName)"
     } catch is CancellationError {
@@ -388,7 +434,8 @@ public final class AppSession {
     await api.setWorkspace(me.currentWorkspace?.id)
     state = .signedIn(me)
     scope = me.currentWorkspace.map {
-      WorkspaceScope(api: api, workspace: $0, me: me.user.summary, clock: clock, calendar: calendar, now: now)
+      WorkspaceScope(api: api, workspace: $0, me: me.user.summary, clock: clock, calendar: calendar, now: now, defaults: .standard,
+                     uploads: uploads, slots: uploadSlots, cache: attachmentCache)
     }
     scope?.completionFeedback.cooldown = celebrationCooldown
     generation += 1
@@ -415,7 +462,16 @@ public final class AppSession {
     scope = nil
     state = .signedOut
     generation += 1
+    uploads.cancelAll()
+    let cache = attachmentCache
+    wipes += 1
+    let wiping = Task { await cache.wipe() }
+    pendingWipe = wiping
   }
+
+  /// The last wipe started by a sign-out (tests await it).
+  @ObservationIgnored private(set) var pendingWipe: Task<Void, Never>?
+  @ObservationIgnored private(set) var wipes = 0
 }
 
 // MARK: - Previews & UI tests
@@ -425,7 +481,7 @@ extension AppSession {
   public static func preview(signedIn: Bool = true, as email: String = "alice@example.com") -> AppSession {
     let fake = FakeMekariAPI(signedInAs: signedIn ? email : nil)
     let session = AppSession(settings: InMemoryServerSettings(serverURL: URL(string: "https://demo.invalid")),
-                             tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake })
+                             tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake }, attachmentCache: .scratch())
     Task { await session.start() }
     return session
   }
@@ -435,6 +491,14 @@ extension AppSession {
   public static func uiTest(signedIn: Bool) -> AppSession {
     let fake = FakeMekariAPI(signedInAs: signedIn ? "alice@example.com" : nil)
     return AppSession(settings: InMemoryServerSettings(serverURL: URL(string: "https://demo.invalid")),
-                      tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake })
+                      tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake }, attachmentCache: .scratch())
+  }
+}
+
+extension AttachmentCache {
+  /// A cache in a fresh temp folder (previews, UI tests, unit tests): never the real Caches/Attachments.
+  public static func scratch() -> AttachmentCache {
+    AttachmentCache(directory: FileManager.default.temporaryDirectory.appendingPathComponent("MekariProjectAttachments-\(UUID().uuidString)"),
+                    quarantine: { _ in })
   }
 }

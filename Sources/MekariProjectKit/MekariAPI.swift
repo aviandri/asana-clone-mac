@@ -45,7 +45,8 @@ public protocol MekariAPI: AnyObject, Sendable {
 
   // Stories
   func stories(taskID: String) async throws -> [Story]
-  func addComment(taskID: String, body: String) async throws -> Comment
+  /// `attachmentIDs`: drafts I uploaded on this task (≤ 20); `body` may then be empty.
+  func addComment(taskID: String, body: String, attachmentIDs: [String]) async throws -> Comment
   func editComment(_ id: String, body: String) async throws -> Comment
   func deleteComment(_ id: String) async throws
 
@@ -54,6 +55,31 @@ public protocol MekariAPI: AnyObject, Sendable {
   func markRead(_ notificationID: String) async throws
   func markAllRead() async throws
   func search(_ query: String) async throws -> SearchResults
+
+  // Attachments & links (BE §13)
+  /// Streams `file` from disk as one multipart part `file` (never the whole file in memory). `draft` sends
+  /// `?draft=true` (the comment composer). `fileName` overrides the file's own name. Over
+  /// `AttachmentLimits.maxUploadBytes` → `.payloadTooLarge` without a request. Cancel the calling task to
+  /// cancel the upload. `progress` may be called on any thread.
+  func uploadAttachment(taskID: String, file: URL, fileName: String?, draft: Bool,
+                        progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> Attachment
+  func addLink(taskID: String, url: String, title: String?, draft: Bool) async throws -> Attachment
+  func attachment(_ id: String) async throws -> Attachment
+  func refreshLinkPreview(_ id: String) async throws -> Attachment
+  func deleteAttachment(_ id: String) async throws
+  /// GETs a server-relative attachment path (`contentPath`, `thumbnailPath(size:)`…) into `destination`,
+  /// replacing it only on a 200. With `etag`, sends `If-None-Match` and a 304 leaves `destination` alone.
+  /// Paths outside `/api/v1/attachments/` are refused (`.validation`) without a request.
+  func download(_ path: String, to destination: URL, ifNoneMatch etag: String?,
+                progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> DownloadOutcome
+  /// Small bytes in memory: thumbnails, link icons and images. Same path rule as `download`.
+  func attachmentData(_ path: String) async throws -> Data
+}
+
+extension MekariAPI {
+  public func addComment(taskID: String, body: String) async throws -> Comment {
+    try await addComment(taskID: taskID, body: body, attachmentIDs: [])
+  }
 }
 
 public enum APIEvent: Sendable, Equatable {

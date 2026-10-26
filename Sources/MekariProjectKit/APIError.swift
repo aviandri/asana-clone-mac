@@ -5,6 +5,10 @@ import Foundation
 public struct APIError: Error, Sendable, Hashable, LocalizedError {
   public enum Code: Sendable, Hashable {
     case notFound, validation, unauthorized, forbidden, conflict, gone, rateLimited, `internal`
+    /// 413 `PAYLOAD_TOO_LARGE` (over 100 MB), or the client's own pre-check (then `status` is nil).
+    case payloadTooLarge
+    /// 507 `INSUFFICIENT_STORAGE`: the server is out of space for attachments (A12).
+    case insufficientStorage
     /// No HTTP response: offline, DNS, TLS, timeout.
     case transport
     /// A response we couldn't decode.
@@ -22,6 +26,8 @@ public struct APIError: Error, Sendable, Hashable, LocalizedError {
       case "GONE": self = .gone
       case "RATE_LIMITED": self = .rateLimited
       case "INTERNAL": self = .internal
+      case "PAYLOAD_TOO_LARGE": self = .payloadTooLarge
+      case "INSUFFICIENT_STORAGE": self = .insufficientStorage
       default: self = .unknown(raw)
       }
     }

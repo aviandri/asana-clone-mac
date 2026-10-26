@@ -99,6 +99,34 @@ public final class TaskCache {
     }
   }
 
+  /// Changes a loaded task's attachments locally (after an upload, a posted comment or a delete) and keeps
+  /// `attachmentCount` in step. `bumpedAt` (a task-level add's time) moves `updatedAt` forward like the server
+  /// does, so a load that started before the change can't take it back.
+  public func editAttachments(_ id: String, bumpedAt: Date? = nil, _ change: (inout [Attachment]) -> Void) {
+    guard var detail = confirmedDetails[id] else {
+      if var item = confirmed[id] {
+        var none: [Attachment] = []
+        change(&none)
+        item.attachmentCount = max(0, item.attachmentCount + none.count)
+        confirmed[id] = item
+        recompute(id)
+      }
+      return
+    }
+    let before = detail.attachments.count
+    change(&detail.attachments)
+    detail.attachments.sort { $0.createdAt > $1.createdAt }
+    if let bumpedAt, bumpedAt > detail.task.updatedAt { detail.task.updatedAt = bumpedAt }
+    detail.task.attachmentCount = max(0, detail.task.attachmentCount + detail.attachments.count - before)
+    confirmedDetails[id] = detail
+    if var item = confirmed[id] {
+      item.attachmentCount = detail.task.attachmentCount
+      item.updatedAt = max(item.updatedAt, detail.task.updatedAt)
+      confirmed[id] = item
+    }
+    recompute(id)
+  }
+
   /// Shows `changes` at once, PATCHes, then stores the server's `TaskDetail`. On failure only this
   /// edit is dropped (others stay) and the error is rethrown: an `APIError`, or `CancellationError`.
   /// Pass `assignee` when `changes.assigneeId` is set, so the row shows the person immediately.

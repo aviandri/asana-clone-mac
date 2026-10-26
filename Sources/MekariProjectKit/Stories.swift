@@ -3,23 +3,26 @@ import Foundation
 public struct Comment: Codable, Sendable, Hashable, Identifiable {
   public var id: String
   public var author: UserSummary
-  /// Markdown; mentions in storage form `@[Name](userId)`.
+  /// Markdown; mentions in storage form `@[Name](userId)`. May be empty when the comment has attachments.
   public var body: String
   public var createdAt: Date
   public var editedAt: Date?
+  /// Oldest first (BE §13). Empty from servers before v1.3.
+  public var attachments: [Attachment]
 
-  public init(id: String, author: UserSummary, body: String, createdAt: Date, editedAt: Date? = nil) {
+  public init(id: String, author: UserSummary, body: String, createdAt: Date, editedAt: Date? = nil, attachments: [Attachment] = []) {
     self.id = id
     self.author = author
     self.body = body
     self.createdAt = createdAt
     self.editedAt = editedAt
+    self.attachments = attachments
   }
 
   /// `body` split into text and mention tokens (markdown is rendered by the app).
   public var segments: [Mentions.Segment] { Mentions.parse(body) }
 
-  private enum CodingKeys: String, CodingKey { case kind, id, author, body, createdAt, editedAt }
+  private enum CodingKeys: String, CodingKey { case kind, id, author, body, createdAt, editedAt, attachments }
 
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -28,6 +31,7 @@ public struct Comment: Codable, Sendable, Hashable, Identifiable {
     body = try c.decode(String.self, forKey: .body)
     createdAt = try c.decode(Date.self, forKey: .createdAt)
     editedAt = try c.decodeIfPresent(Date.self, forKey: .editedAt)
+    attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
   }
 
   public func encode(to encoder: Encoder) throws {
@@ -38,6 +42,7 @@ public struct Comment: Codable, Sendable, Hashable, Identifiable {
     try c.encode(body, forKey: .body)
     try c.encode(createdAt, forKey: .createdAt)
     try c.encode(editedAt, forKey: .editedAt)
+    try c.encode(attachments, forKey: .attachments)
   }
 }
 
