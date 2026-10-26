@@ -68,6 +68,7 @@ struct TaskInspectorView: View {
                 }
                 .background {
                     PasteCatcher { responder in pasteIntoTask(firstResponder: responder) }
+                    .frame(width: 0, height: 0)
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if loaded {

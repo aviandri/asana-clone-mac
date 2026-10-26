@@ -131,9 +131,10 @@ final class AttachmentUITests: XCTestCase {
         pasteboard.clearContents()
         XCTAssertTrue(pasteboard.setData(png, forType: .png))
 
-        // On the macOS 15 runner XCUITest calls the composer field "not hittable" (it sits in the inspector's bottom
-        // inset); a click at its centre focuses it all the same.
-        field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        // A plain click: the ⌘V catcher once covered the composer ("not hittable" on macOS 15), so this also checks
+        // that nothing sits over the field.
+        XCTAssertTrue(field.isHittable, "something covers the comment field")
+        field.click()
         app.typeKey("v", modifierFlags: .command)
         // The chip's container isn't an accessibility element of its own; its × button names the file.
         let chip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remove Pasted image '")).firstMatch
@@ -141,7 +142,8 @@ final class AttachmentUITests: XCTestCase {
         let send = element(app, "composer.send")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: send)
         XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: 10), .completed, "Comment stayed disabled after the upload")
-        send.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()   // "not hittable" there too
+        XCTAssertTrue(send.isHittable, "something covers the Comment button")
+        send.click()
         XCTAssertTrue(waitForNonExistence(of: chip, timeout: 10), "the chip didn't go with the comment")
     }
 }

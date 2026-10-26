@@ -244,6 +244,7 @@ struct CommentComposerView: View {
                 attach(files)
                 return true
             }
+            .frame(width: 0, height: 0)
         }
         .onAppear { ComposerPresence.appeared(composer) }
         .onDisappear { ComposerPresence.disappeared(composer) }

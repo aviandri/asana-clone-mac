@@ -84,7 +84,7 @@ enum AttachmentPaste {
 
 /// Catches ⌘V in its window before the text system does, so files and images on the clipboard can be
 /// attached. `handle` gets the window's first responder and returns true when it took the paste; false
-/// leaves the event alone (an ordinary text paste).
+/// leaves the event alone (an ordinary text paste). Use it zero-sized (`.frame(width: 0, height: 0)`).
 @MainActor
 struct PasteCatcher: NSViewRepresentable {
     let handle: @MainActor (NSResponder?) -> Bool
@@ -106,6 +106,12 @@ struct PasteCatcher: NSViewRepresentable {
     final class CatcherView: NSView {
         var handle: (@MainActor (NSResponder?) -> Bool)?
         private var monitor: Any?
+
+        // It only listens for keys: invisible to clicks and to accessibility, so nothing it sits near (an
+        // AppKit view in a SwiftUI background still hit-tests before SwiftUI content) is covered by it.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func isAccessibilityElement() -> Bool { false }
+        override func accessibilityChildren() -> [Any]? { [] }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()

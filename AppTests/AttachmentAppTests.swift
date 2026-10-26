@@ -200,6 +200,14 @@ final class AttachmentAppTests: XCTestCase {
         XCTAssertFalse(PasteCatcher.CatcherView.isPaste(try key("c", .command)))
     }
 
+    @MainActor
+    func testThePasteCatcherNeverTakesClicksOrAccessibilityFocus() {
+        // It sits in the composer's background; an AppKit view there hit-tests before SwiftUI content.
+        let view = PasteCatcher.CatcherView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))
+        XCTAssertNil(view.hitTest(NSPoint(x: 150, y: 50)))
+        XCTAssertFalse(view.isAccessibilityElement())
+    }
+
     // MARK: Session
 
     @MainActor
