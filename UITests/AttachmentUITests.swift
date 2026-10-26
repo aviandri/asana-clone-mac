@@ -131,7 +131,9 @@ final class AttachmentUITests: XCTestCase {
         pasteboard.clearContents()
         XCTAssertTrue(pasteboard.setData(png, forType: .png))
 
-        field.click()
+        // On the macOS 15 runner XCUITest calls the composer field "not hittable" (it sits in the inspector's bottom
+        // inset); a click at its centre focuses it all the same.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         app.typeKey("v", modifierFlags: .command)
         // The chip's container isn't an accessibility element of its own; its × button names the file.
         let chip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remove Pasted image '")).firstMatch
