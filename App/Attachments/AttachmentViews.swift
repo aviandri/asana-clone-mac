@@ -25,6 +25,8 @@ struct AttachmentContext {
 @MainActor
 struct AttachmentsSection: View {
     let context: AttachmentContext
+    /// A note about the last drop or paste on the inspector ("Folders can't be attached.").
+    var notice: String? = nil
     @State private var addingLink = false
     @State private var pendingDelete: Attachment?
 
@@ -36,7 +38,14 @@ struct AttachmentsSection: View {
         if store.canAttach || !attachments.isEmpty || !uploads.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 header(count: attachments.count)
-                ErrorBanner(error: context.files.lastError) { context.files.clearError() }
+                // This task's download failures only (AttachmentErrors), not the workspace's.
+                ErrorBanner(error: AttachmentErrors.shared.error(for: store.taskID)) { AttachmentErrors.shared.clear(taskID: store.taskID) }
+                if let notice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("attachments.notice")
+                }
                 if !uploads.isEmpty {
                     VStack(spacing: 6) {
                         ForEach(uploads) { upload in
@@ -166,13 +175,7 @@ struct FileTile: View {
 
     var body: some View {
         tile
-            .overlay(alignment: .top) {
-                if let progress = context.files.downloads[a.id] {
-                    DownloadBar(name: a.name ?? "file", progress: progress) { context.files.cancelDownload(a.id) }
-                        .padding(4)
-                        .accessibilityIdentifier("attachment.download.\(a.id)")
-                }
-            }
+            .overlay(alignment: .top) { TileDownload(a: a, files: context.files) }
             .task(id: a.thumbnailPath ?? a.id) {
                 guard a.hasThumbnail, let data = await context.files.thumbnail(for: a, size: .small) else { return }
                 thumbnail = NSImage(data: data)
@@ -245,6 +248,21 @@ struct FileTile: View {
     }
 }
 
+/// A tile's download bar. Its own view, so only it (not the whole tile) re-renders as downloads progress.
+@MainActor
+private struct TileDownload: View {
+    let a: Attachment
+    let files: AttachmentFiles
+
+    var body: some View {
+        if let progress = files.downloads[a.id] {
+            DownloadBar(name: a.name ?? "file", progress: progress) { files.cancelDownload(a.id) }
+                .padding(4)
+                .accessibilityIdentifier("attachment.download.\(a.id)")
+        }
+    }
+}
+
 /// Download progress over a tile, with Cancel (it stops the shared download for every caller).
 @MainActor
 struct DownloadBar: View {
@@ -263,6 +281,7 @@ struct DownloadBar: View {
             Button("Cancel download of \(name)", systemImage: "xmark.circle.fill", action: cancel)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
+                .accessibilityIdentifier("attachment.download.cancel")
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)

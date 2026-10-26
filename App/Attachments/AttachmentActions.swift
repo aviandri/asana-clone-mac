@@ -1,12 +1,12 @@
 import AppKit
 import MekariProjectFeatures
 import MekariProjectKit
+import Observation
 import UniformTypeIdentifiers
 
 /// What the attachment buttons and context menus do (SPEC-MAC §8 Actions). Files are downloaded through
 /// the workspace's `AttachmentFiles` (cached, quarantined) before they are opened, saved or revealed; a
-/// failed download shows in the section's banner (`AttachmentFiles.lastError`). Only http/https links are
-/// ever opened.
+/// failed download shows in its task's banner (`AttachmentErrors`). Only http/https links are ever opened.
 @MainActor
 struct AttachmentActions {
     let session: AppSession
@@ -15,6 +15,11 @@ struct AttachmentActions {
 
     var files: AttachmentFiles { scope.attachmentFiles }
 
+    /// The local copy; a failure is recorded for the attachment's task (not workspace-wide).
+    func download(_ a: Attachment, revalidate: Bool = true) async -> URL? {
+        await AttachmentErrors.shared.download(a, files: files, revalidate: revalidate)
+    }
+
     /// FILE: the default app for the downloaded copy. LINK: the default browser.
     func open(_ a: Attachment) {
         if a.kind == .link {
@@ -22,7 +27,7 @@ struct AttachmentActions {
             return
         }
         Task {
-            guard let file = await files.file(for: a) else { return }
+            guard let file = await download(a) else { return }
             NSWorkspace.shared.open(file)
         }
     }
@@ -36,7 +41,7 @@ struct AttachmentActions {
             return
         }
         Task {
-            guard let file = await files.file(for: a) else { return }
+            guard let file = await download(a) else { return }
             NSWorkspace.shared.open([file], withApplicationAt: app, configuration: configuration, completionHandler: nil)
         }
     }
@@ -69,7 +74,7 @@ struct AttachmentActions {
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         Task {
-            guard let file = await files.file(for: a) else { return }
+            guard let file = await download(a) else { return }
             copy(file, to: destination)
         }
     }
@@ -77,7 +82,7 @@ struct AttachmentActions {
     /// Save to Downloads, with a unique name ("report 2.pdf"), then bounce the Downloads stack.
     func saveToDownloads(_ a: Attachment) {
         Task {
-            guard let file = await files.file(for: a),
+            guard let file = await download(a),
                   let downloads = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first else { return }
             let destination = Self.uniqueURL(for: file.lastPathComponent, in: downloads)
             if copy(file, to: destination) {
@@ -89,7 +94,7 @@ struct AttachmentActions {
     /// Show in Finder: downloads first if needed (the copy lives in Caches/Attachments).
     func showInFinder(_ a: Attachment) {
         Task {
-            guard let file = await files.file(for: a, revalidate: false) else { return }
+            guard let file = await download(a, revalidate: false) else { return }
             NSWorkspace.shared.activateFileViewerSelecting([file])
         }
     }
@@ -104,7 +109,8 @@ struct AttachmentActions {
     }
 
     /// Copies the cached download out (xattrs, so the quarantine flag, come along). Replaces what's there:
-    /// the save panel already asked.
+    /// the save panel already asked. The cache's copy is read-only (so apps opening it can't edit what the
+    /// app serves back); the user's own copy is made writable again.
     @discardableResult
     private func copy(_ file: URL, to destination: URL) -> Bool {
         do {
@@ -113,6 +119,7 @@ struct AttachmentActions {
             } else {
                 try FileManager.default.copyItem(at: file, to: destination)
             }
+            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: destination.path)
             return true
         } catch {
             NSAlert(error: error).runModal()
@@ -152,20 +159,30 @@ enum OpenWithApps {
         var id: URL { url }
     }
 
+    /// Looked up once per content type (or once for links) and kept: LaunchServices queries are slow, and menus
+    /// are built as views render.
     @MainActor
     static func apps(for a: Attachment, workspace: NSWorkspace = .shared) -> [App] {
-        let all: [URL]
-        let preferred: URL?
         if a.kind == .link {
             guard let url = a.linkURL else { return [] }
-            all = workspace.urlsForApplications(toOpen: url)
-            preferred = workspace.urlForApplication(toOpen: url)
-        } else {
-            let type = AttachmentFormatting.contentType(mimeType: a.mimeType, name: a.name)
-            all = workspace.urlsForApplications(toOpen: type)
-            preferred = workspace.urlForApplication(toOpen: type)
+            return cached("scheme:\(url.scheme ?? "https")") {
+                list(workspace.urlsForApplications(toOpen: url), preferred: workspace.urlForApplication(toOpen: url))
+            }
         }
-        return list(all, preferred: preferred)
+        let type = AttachmentFormatting.contentType(mimeType: a.mimeType, name: a.name)
+        return cached("type:\(type.identifier)") {
+            list(workspace.urlsForApplications(toOpen: type), preferred: workspace.urlForApplication(toOpen: type))
+        }
+    }
+
+    @MainActor private static var cache: [String: [App]] = [:]
+
+    @MainActor
+    static func cached(_ key: String, _ lookup: () -> [App]) -> [App] {
+        if let apps = cache[key] { return apps }
+        let apps = lookup()
+        cache[key] = apps
+        return apps
     }
 
     /// Unique by path, the default first, the rest sorted by display name.
@@ -191,5 +208,31 @@ enum OpenWithApps {
         let icon = (NSWorkspace.shared.icon(forFile: app.path).copy() as? NSImage) ?? NSImage()
         icon.size = NSSize(width: 16, height: 16)
         return icon
+    }
+}
+
+/// Download failures, per task: the workspace's `AttachmentFiles.lastError` is shared by every task, so
+/// it's moved here (and cleared there) as soon as a download for a known task fails, and each task's
+/// Attachments section shows only its own.
+@MainActor @Observable
+final class AttachmentErrors {
+    static let shared = AttachmentErrors()
+
+    private(set) var byTask: [String: APIError] = [:]
+
+    func error(for taskID: String) -> APIError? { byTask[taskID] }
+
+    func clear(taskID: String) { byTask[taskID] = nil }
+
+    func record(_ error: APIError, taskID: String) { byTask[taskID] = error }
+
+    /// `files.file(for:)`, with a failure recorded for `a`'s task.
+    func download(_ a: Attachment, files: AttachmentFiles, revalidate: Bool = true) async -> URL? {
+        let url = await files.file(for: a, revalidate: revalidate)
+        if url == nil, let error = files.lastError {
+            record(error, taskID: a.taskId)
+            files.clearError()
+        }
+        return url
     }
 }

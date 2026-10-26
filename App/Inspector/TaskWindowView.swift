@@ -16,6 +16,8 @@ struct TaskWindowRef: Codable, Hashable {
 struct TaskWindowView: View {
     let session: AppSession
     @Binding var ref: TaskWindowRef?
+    /// This window, for ComposerPresence: its task's drafts go when the window closes or shows another task.
+    @State private var owner = "window.\(UUID().uuidString)"
 
     var body: some View {
         Group {
@@ -39,6 +41,19 @@ struct TaskWindowView: View {
             }
         }
         .frame(minWidth: 420, minHeight: 480)
+        .onChange(of: shownComposerKey, initial: true) { _, _ in ComposerPresence.show(shownComposer, owner: owner) }
+        .onDisappear { ComposerPresence.show(nil, owner: owner) }
+    }
+
+    /// The composer this window shows: its task's, while the app is in the task's workspace.
+    private var shownComposer: CommentComposer? {
+        guard let ref, let scope = session.scope, scope.id == ref.workspaceID else { return nil }
+        return scope.taskDetail(ref.taskID).composer
+    }
+
+    private var shownComposerKey: String {
+        guard let ref, let scope = session.scope, scope.id == ref.workspaceID else { return "" }
+        return "\(scope.id)/\(ref.taskID)"
     }
 }
 

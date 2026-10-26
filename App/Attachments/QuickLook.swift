@@ -78,7 +78,7 @@ final class QuickLookController: NSResponder {
     private func load(_ a: Attachment) {
         guard let files, loading.insert(a.id).inserted else { return }
         Task {
-            let url = await files.file(for: a, revalidate: false)
+            let url = await AttachmentErrors.shared.download(a, files: files, revalidate: false)
             loading.remove(a.id)
             guard let url else { return }   // failed (banner) or cancelled (tile)
             local[a.id] = url

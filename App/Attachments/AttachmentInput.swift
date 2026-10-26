@@ -11,19 +11,35 @@ struct AttachmentInputFile: Equatable {
     var deletesFile = false
 }
 
-/// Files dropped from Finder (or any app that drags file URLs). Folders are left out (`skipped`). Main
-/// actor: the providers come from a SwiftUI drop and stay there.
+/// Files dropped from Finder (file URLs), and files other apps promise rather than hand over (Mail
+/// attachments, Photos, images dragged out of Safari), copied to a temp file we own while the provider's
+/// copy still exists. Folders and packages are left out (`skipped`). Main actor: the providers come from a
+/// SwiftUI drop and stay there.
 @MainActor
 enum AttachmentDrop {
-    nonisolated static let types: [UTType] = [.fileURL]
+    nonisolated static let types: [UTType] = [.fileURL, .data]
 
     static func files(from providers: [NSItemProvider]) async -> (files: [AttachmentInputFile], skipped: Int) {
-        var urls: [URL] = []
-        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            if let url = await fileURL(from: provider) { urls.append(url) }
+        var files: [AttachmentInputFile] = []
+        var skipped = 0
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                guard let url = await fileURL(from: provider) else { continue }
+                if isDirectory(url) { skipped += 1 } else { files.append(AttachmentInputFile(url: url)) }
+            } else if let type = promisedType(provider), let file = await promisedFile(from: provider, type: type) {
+                files.append(file)
+            }
         }
-        let regular = urls.filter { !isDirectory($0) }
-        return (regular.map { AttachmentInputFile(url: $0) }, urls.count - regular.count)
+        return (files, skipped)
+    }
+
+    /// The type to ask a provider without a file URL for: data, but not plain text or a web link dragged on
+    /// its own (those stay text).
+    static func promisedType(_ provider: NSItemProvider) -> String? {
+        provider.registeredTypeIdentifiers.first { id in
+            guard let type = UTType(id), type.conforms(to: .data) else { return false }
+            return !type.conforms(to: .text) && !type.conforms(to: .url)
+        }
     }
 
     private static func fileURL(from provider: NSItemProvider) async -> URL? {
@@ -36,14 +52,53 @@ enum AttachmentDrop {
         }
     }
 
+    /// The provider's file exists only inside its callback: copy it to a temp file of ours (deleted with the
+    /// upload), uploaded under the provider's name.
+    private static func promisedFile(from provider: NSItemProvider, type: String) async -> AttachmentInputFile? {
+        let suggested = provider.suggestedName
+        return await withCheckedContinuation { continuation in
+            _ = provider.loadFileRepresentation(forTypeIdentifier: type) { @Sendable url, _ in
+                guard let url, !isDirectory(url) else { return continuation.resume(returning: nil) }
+                var name = suggested ?? url.lastPathComponent
+                if (name as NSString).pathExtension.isEmpty, let ext = UTType(type)?.preferredFilenameExtension {
+                    name += ".\(ext)"
+                }
+                guard let copy = try? TempFiles.copy(url, extension: (name as NSString).pathExtension) else {
+                    return continuation.resume(returning: nil)
+                }
+                continuation.resume(returning: AttachmentInputFile(url: copy, name: name, deletesFile: true))
+            }
+        }
+    }
+
     nonisolated static func isDirectory(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }
 
+/// Our temp files (pasted images, promised drops): one flat folder, a random name each, so deleting the file
+/// after its upload leaves nothing behind. The upload goes out under the real name (`fileName`).
+enum TempFiles {
+    static var folder: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("MekariProjectAttachments-input", isDirectory: true)
+    }
+
+    static func url(extension ext: String) throws -> URL {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let name = ext.isEmpty ? UUID().uuidString : "\(UUID().uuidString).\(ext)"
+        return folder.appendingPathComponent(name)
+    }
+
+    static func copy(_ file: URL, extension ext: String) throws -> URL {
+        let target = try url(extension: ext)
+        try FileManager.default.copyItem(at: file, to: target)
+        return target
+    }
+}
+
 /// ⌘V of files or an image (SPEC-MAC §8 Add). Files copied in Finder are attached as they are; an
-/// image (a screenshot, or copied from an image editor) becomes "Pasted image <date>.png" in a temp
-/// folder. Clipboard text that also carries an image (copied from a web page, a document) stays an
+/// image (a screenshot, or copied from an image editor) becomes "Pasted image <date>.png" (a temp file of
+/// ours, see `TempFiles`). Clipboard text that also carries an image (copied from a web page, a document) stays an
 /// ordinary text paste.
 enum AttachmentPaste {
     static func files(from pasteboard: NSPasteboard, now: Date = .now) -> [AttachmentInputFile]? {
@@ -54,16 +109,7 @@ enum AttachmentPaste {
         }
         guard pasteboard.string(forType: .string) == nil, let png = pngData(from: pasteboard) else { return nil }
         let name = "Pasted image \(stamp(now)).png"
-        let folder = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MekariProjectPaste", isDirectory: true)
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let url = folder.appendingPathComponent(name)
-        do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try png.write(to: url, options: .atomic)
-        } catch {
-            return nil
-        }
+        guard let url = try? TempFiles.url(extension: "png"), (try? png.write(to: url, options: .atomic)) != nil else { return nil }
         return [AttachmentInputFile(url: url, name: name, deletesFile: true)]
     }
 
@@ -128,33 +174,34 @@ struct PasteCatcher: NSViewRepresentable {
             monitor = nil
         }
 
+        /// ⌘V, whatever Caps Lock (or the fn/numeric-pad flags) say: only ⌘⇧⌥⌃ count.
         static func isPaste(_ event: NSEvent) -> Bool {
-            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command && event.charactersIgnoringModifiers == "v"
+            event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command && event.charactersIgnoringModifiers?.lowercased() == "v"
         }
     }
 }
 
-/// How many inspectors show each task's comment composer. The main window's inspector and a task window
-/// share one store, so the composer's drafts are discarded only when the last of them goes (web: leaving
-/// the composer deletes its drafts; the server sweeps whatever is left after 24 h).
+/// Which task's composer each place shows: the main window (its selected task, per workspace scope) and each
+/// task window. A composer's drafts are discarded when no place shows its task any more, i.e. the task was
+/// left (another task selected, its window closed), not when an inspector is merely hidden (web: leaving the
+/// composer deletes its drafts; the server sweeps whatever is left after 24 h).
 @MainActor
 enum ComposerPresence {
-    private static var counts: [ObjectIdentifier: Int] = [:]
+    private static var shown: [String: CommentComposer] = [:]
+    /// Discards started (tests await them).
+    private(set) static var pendingDiscard: Task<Void, Never>?
 
-    static func appeared(_ composer: CommentComposer) {
-        counts[ObjectIdentifier(composer), default: 0] += 1
-    }
-
-    static func disappeared(_ composer: CommentComposer) {
-        let key = ObjectIdentifier(composer)
-        let count = (counts[key] ?? 1) - 1
-        if count > 0 {
-            counts[key] = count
-            return
+    /// `owner` now shows `composer` (nil: nothing, e.g. no task selected or the window closed).
+    static func show(_ composer: CommentComposer?, owner: String) {
+        let previous = shown[owner]
+        shown[owner] = composer
+        guard let previous, previous !== composer else { return }
+        pendingDiscard = Task { @MainActor in
+            // Shown again meanwhile (by another place, or back here): keep the drafts.
+            guard count(previous) == 0 else { return }
+            await previous.discard()
         }
-        counts[key] = nil
-        Task { await composer.discard() }
     }
 
-    static func count(_ composer: CommentComposer) -> Int { counts[ObjectIdentifier(composer)] ?? 0 }
+    static func count(_ composer: CommentComposer) -> Int { shown.values.filter { $0 === composer }.count }
 }

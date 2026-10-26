@@ -13,6 +13,8 @@ struct TaskInspectorView: View {
     var onOpenTask: (String) -> Void = { _ in }
     /// Files dragged over the inspector (editors attach them to the task).
     @State private var dropTargeted = false
+    /// "Folders can't be attached." after a drop that had some.
+    @State private var dropNotice: String?
 
     private var attachmentContext: AttachmentContext {
         AttachmentContext(actions: AttachmentActions(session: session, scope: scope, store: store))
@@ -36,7 +38,7 @@ struct TaskInspectorView: View {
                             }
                         }
                         if loaded {
-                            AttachmentsSection(context: attachmentContext)
+                            AttachmentsSection(context: attachmentContext, notice: dropNotice)
                             SubtasksSection(store: store, subtasks: task.subtasks, onOpenTask: onOpenTask)
                             FollowersSection(scope: scope, store: store, followers: task.followers)
                             Divider()
@@ -97,7 +99,9 @@ struct TaskInspectorView: View {
     private func attachDropped(_ providers: [NSItemProvider]) -> Bool {
         guard store.task != nil, store.canAttach else { return false }
         Task {
-            for file in await AttachmentDrop.files(from: providers).files { store.attach(fileAt: file.url) }
+            let dropped = await AttachmentDrop.files(from: providers)
+            for file in dropped.files { store.attach(fileAt: file.url, fileName: file.name, deletesFile: file.deletesFile) }
+            dropNotice = dropped.skipped > 0 ? "Folders can't be attached." : nil
         }
         return true
     }

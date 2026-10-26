@@ -149,11 +149,12 @@ final class AttachmentAppTests: XCTestCase {
         let files = try XCTUnwrap(AttachmentPaste.files(from: pasteboard))
         XCTAssertEqual(files.count, 1)
         let pasted = try XCTUnwrap(files.first)
-        addTeardownBlock { try? FileManager.default.removeItem(at: pasted.url.deletingLastPathComponent()) }
+        addTeardownBlock { try? FileManager.default.removeItem(at: pasted.url) }
         XCTAssertTrue(pasted.deletesFile)
         XCTAssertTrue(pasted.name?.hasPrefix("Pasted image ") == true)
         XCTAssertEqual(pasted.url.pathExtension, "png")
-        XCTAssertEqual(pasted.url.lastPathComponent, pasted.name)
+        // A random name in one flat folder: deleting the file after its upload leaves nothing behind.
+        XCTAssertEqual(pasted.url.deletingLastPathComponent().standardizedFileURL, TempFiles.folder.standardizedFileURL)
         let data = try Data(contentsOf: pasted.url)
         XCTAssertEqual(Array(data.prefix(4)), [0x89, 0x50, 0x4E, 0x47], "not a PNG")
     }
@@ -188,6 +189,28 @@ final class AttachmentAppTests: XCTestCase {
         XCTAssertEqual(dropped.skipped, 1)
     }
 
+    @MainActor
+    func testPromisedDropsAreCopiedToOurOwnTempFile() async throws {
+        // Mail, Photos and Safari drag file promises: no file URL, a file that exists only in the callback.
+        let source = try temporaryDirectory().appendingPathComponent("IMG_0001")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: source)
+        let promise = NSItemProvider()
+        promise.suggestedName = "Holiday"
+        promise.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { done in
+            done(source, false, nil)
+            return nil
+        }
+        let text = NSItemProvider(object: "just some text" as NSString)
+        let dropped = await AttachmentDrop.files(from: [promise, text])
+        XCTAssertEqual(dropped.files.count, 1, "text stays text")
+        let file = try XCTUnwrap(dropped.files.first)
+        addTeardownBlock { try? FileManager.default.removeItem(at: file.url) }
+        XCTAssertEqual(file.name, "Holiday.png")
+        XCTAssertTrue(file.deletesFile)
+        XCTAssertEqual(file.url.deletingLastPathComponent().standardizedFileURL, TempFiles.folder.standardizedFileURL)
+        XCTAssertEqual(try Data(contentsOf: file.url), try Data(contentsOf: source))
+    }
+
     func testPasteShortcutIsCommandVOnly() throws {
         func key(_ characters: String, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
             try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
@@ -198,6 +221,10 @@ final class AttachmentAppTests: XCTestCase {
         XCTAssertFalse(PasteCatcher.CatcherView.isPaste(try key("v", [.command, .shift])))
         XCTAssertFalse(PasteCatcher.CatcherView.isPaste(try key("v", [])))
         XCTAssertFalse(PasteCatcher.CatcherView.isPaste(try key("c", .command)))
+        // Caps Lock (and the fn/numeric-pad flags) don't stop ⌘V.
+        XCTAssertTrue(PasteCatcher.CatcherView.isPaste(try key("V", [.command, .capsLock])))
+        XCTAssertTrue(PasteCatcher.CatcherView.isPaste(try key("v", [.command, .function])))
+        XCTAssertFalse(PasteCatcher.CatcherView.isPaste(try key("v", [.command, .option])))
     }
 
     @MainActor
@@ -211,31 +238,58 @@ final class AttachmentAppTests: XCTestCase {
     // MARK: Session
 
     @MainActor
-    func testComposerDraftsAreDiscardedWhenTheLastInspectorShowingThemGoes() async throws {
+    func testDraftsGoOnlyWhenNoPlaceShowsTheTaskAnyMore() async throws {
         let session = AppBootstrap.makeSession(arguments: ["-UITestFakeAPI"])
         await session.start()
         let scope = try XCTUnwrap(session.scope)
         let store = scope.taskDetail(DemoIDs.taskWithAttachments)
         await store.load()
         let composer = store.composer
+        let other = scope.taskDetail("50000000-0000-4000-8000-000000000002").composer   // another task's composer
         let note = try temporaryDirectory().appendingPathComponent("note.txt")
         try Data("draft".utf8).write(to: note)
-
         XCTAssertTrue(composer.attach(fileAt: note))
         let finished = await waitUntil { composer.attachments.first?.isFinished == true }
         XCTAssertTrue(finished, "draft didn't finish: \(composer.attachments.map(\.state))")
 
-        // The main inspector and a task window show the same composer.
-        ComposerPresence.appeared(composer)
-        ComposerPresence.appeared(composer)
-        ComposerPresence.disappeared(composer)
-        try await Task.sleep(nanoseconds: 100_000_000)
-        XCTAssertEqual(composer.attachments.count, 1, "one inspector is still open")
+        // The main window selects the task, and a task window shows it too.
+        ComposerPresence.show(composer, owner: "main.test")
+        ComposerPresence.show(composer, owner: "window.test")
+        // Hiding the inspector changes nothing here: only the selection and windows drive this.
+        ComposerPresence.show(other, owner: "main.test")
+        await ComposerPresence.pendingDiscard?.value
+        XCTAssertEqual(composer.attachments.count, 1, "the task window still shows the task")
 
-        ComposerPresence.disappeared(composer)
-        let discarded = await waitUntil { composer.attachments.isEmpty }
-        XCTAssertTrue(discarded)
+        // Selected away and back before the discard ran: kept.
+        ComposerPresence.show(nil, owner: "window.test")
+        ComposerPresence.show(composer, owner: "main.test")
+        await ComposerPresence.pendingDiscard?.value
+        XCTAssertEqual(composer.attachments.count, 1, "shown again: kept")
+
+        // Left everywhere: discarded.
+        ComposerPresence.show(nil, owner: "main.test")
+        await ComposerPresence.pendingDiscard?.value
+        XCTAssertTrue(composer.attachments.isEmpty)
         XCTAssertEqual(ComposerPresence.count(composer), 0)
+    }
+
+    @MainActor
+    func testADownloadFailureShowsOnlyOnItsOwnTask() async throws {
+        let fake = FakeMekariAPI(signedInAs: "alice@example.com")
+        let session = AppSession(settings: InMemoryServerSettings(serverURL: URL(string: "https://demo.invalid")),
+                                 tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake }, attachmentCache: .scratch())
+        await session.start()
+        let scope = try XCTUnwrap(session.scope)
+        let store = scope.taskDetail(DemoIDs.taskWithAttachments)
+        await store.load()
+        let pdf = try XCTUnwrap(store.attachments.first { $0.id == DemoIDs.attachmentPDF })
+        await fake.failNext(.download, with: APIError(code: .internal, status: 500, message: "Disk on fire"))
+        let url = await AttachmentErrors.shared.download(pdf, files: scope.attachmentFiles)
+        XCTAssertNil(url)
+        XCTAssertEqual(AttachmentErrors.shared.error(for: DemoIDs.taskWithAttachments)?.message, "Disk on fire")
+        XCTAssertNil(scope.attachmentFiles.lastError, "moved off the workspace-wide error")
+        XCTAssertNil(AttachmentErrors.shared.error(for: "50000000-0000-4000-8000-000000000099"), "other tasks stay clear")
+        AttachmentErrors.shared.clear(taskID: DemoIDs.taskWithAttachments)
     }
 
     @MainActor

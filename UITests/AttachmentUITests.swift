@@ -24,9 +24,9 @@ final class AttachmentUITests: XCTestCase {
     }
 
     /// Launches against the fake API and opens "Fix login redirect" in the inspector.
-    private func launchIntoTask() -> XCUIApplication {
+    private func launchIntoTask(extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-UITestFakeAPI", "-ApplePersistenceIgnoreState", "YES"]
+        app.launchArguments = ["-UITestFakeAPI", "-ApplePersistenceIgnoreState", "YES"] + extraArguments
         app.launch()
         app.activate()
         // As in AppFlowUITests.launch(): a slow first window, or one restored closed, comes back from the Window menu.
@@ -139,11 +139,36 @@ final class AttachmentUITests: XCTestCase {
         // The chip's container isn't an accessibility element of its own; its × button names the file.
         let chip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remove Pasted image '")).firstMatch
         XCTAssertTrue(chip.waitForExistence(timeout: 10), "no finished chip after ⌘V: \(element(app, "task.inspector").debugDescription)")
+        // Hiding the inspector isn't leaving the task: the draft survives it.
+        let hide = app.buttons["Hide Inspector"].firstMatch
+        XCTAssertTrue(hide.waitForExistence(timeout: 5), "no Hide Inspector button")
+        hide.click()
+        XCTAssertTrue(waitForNonExistence(of: field, timeout: 5), "the inspector didn't hide")
+        app.buttons["Show Inspector"].firstMatch.click()
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), "hiding the inspector discarded the draft")
+
         let send = element(app, "composer.send")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: send)
         XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: 10), .completed, "Comment stayed disabled after the upload")
         XCTAssertTrue(send.isHittable, "something covers the Comment button")
         send.click()
         XCTAssertTrue(waitForNonExistence(of: chip, timeout: 10), "the chip didn't go with the comment")
+    }
+
+    @MainActor
+    func testADownloadInProgressCanBeCancelledFromTheTile() {
+        // The fake parks downloads, so the bar stays up.
+        let app = launchIntoTask(extraArguments: ["-UITestHoldDownloads"])
+        let tile = element(app, "attachment.tile.\(pdf)")
+        XCTAssertTrue(tile.waitForExistence(timeout: 5))
+        tile.rightClick()
+        let save = app.menuItems["Save to Downloads"]
+        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        save.click()
+        let cancel = element(app, "attachment.download.cancel")
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5), "no download bar")
+        XCTAssertTrue(cancel.isHittable, "something covers the download bar's Cancel")
+        cancel.click()
+        XCTAssertTrue(waitForNonExistence(of: cancel, timeout: 5), "Cancel didn't stop the download")
     }
 }

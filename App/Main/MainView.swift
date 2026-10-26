@@ -61,6 +61,11 @@ struct MainView: View {
                 router.open(target)
             }
         }
+        // The composer's drafts go when the task is left, not when the inspector is hidden (ComposerPresence).
+        .onChange(of: router.selectedTask, initial: true) { _, new in
+            ComposerPresence.show(new.map { scope.taskDetail($0).composer }, owner: "main.\(scope.id)")
+        }
+        .onDisappear { ComposerPresence.show(nil, owner: "main.\(scope.id)") }
         .onChange(of: router.selectedTask, initial: true) { _, new in
             if new != nil, !showInspector { showInspector = true }
         }

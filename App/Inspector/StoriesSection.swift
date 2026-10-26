@@ -21,7 +21,8 @@ struct StoriesSection: View {
             ForEach(stories) { story in
                 switch story {
                 case .comment(let comment):
-                    CommentRow(comment: comment, attachmentContext: attachmentContext)
+                    CommentRow(comment: comment, attachmentContext: attachmentContext,
+                               onDelete: canDelete(comment) ? { onDelete(comment.id) } : nil)
                         .contextMenu {
                             if canDelete(comment) {
                                 Button("Delete Comment", role: .destructive) { onDelete(comment.id) }
@@ -39,6 +40,8 @@ struct StoriesSection: View {
 struct CommentRow: View {
     let comment: Comment
     var attachmentContext: AttachmentContext? = nil
+    /// The context menu's Delete Comment, also offered to VoiceOver on the row (the row is one combined element).
+    var onDelete: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -63,6 +66,9 @@ struct CommentRow: View {
                 }
             }
             .accessibilityElement(children: .combine)
+            .accessibilityActions {
+                if let onDelete { Button("Delete Comment", action: onDelete) }
+            }
             // The attachments stay separate elements, each with its own actions.
             if let attachmentContext, !comment.attachments.isEmpty {
                 CommentAttachmentsView(attachments: comment.attachments, context: attachmentContext)
@@ -150,7 +156,8 @@ struct ActivityRow: View {
 /// The field sits in a raised box with a visible border (rc1 QA U1: a roundedBorder field and a
 /// default-style button were dark grey on dark grey) and gets the full width.
 /// Attachments (BE §13): the paperclip, files dropped on the composer, and ⌘V of files or an image
-/// while the field has focus become draft chips under the field. Leaving the task discards them.
+/// while the field has focus become draft chips under the field. Leaving the task discards them
+/// (`ComposerPresence`, driven by the selection and task windows, not by this view coming and going).
 @MainActor
 struct CommentComposerView: View {
     @Bindable var composer: CommentComposer
@@ -246,8 +253,6 @@ struct CommentComposerView: View {
             }
             .frame(width: 0, height: 0)
         }
-        .onAppear { ComposerPresence.appeared(composer) }
-        .onDisappear { ComposerPresence.disappeared(composer) }
     }
 
     /// Adds draft chips; past 20 the rest are left out (a pasted image's temp file goes with them), and the
