@@ -447,6 +447,77 @@ final class AttachmentStoreTests: XCTestCase {
   }
 
   @MainActor
+  func testASendWhoseAnswerWasLostNeverDeletesWhatLanded() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("landed.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    // The BE commits, then the answer is lost (a 502 from the proxy).
+    _ = try await fake.addCommentDirectly(taskID: DemoIDs.taskWithAttachments, attachmentIDs: [draftID])
+    await fake.failNext(.addComment, with: APIError(code: .unknown("HTTP 502"), status: 502, message: "Bad gateway"))
+    await fake.release(.addComment, all: true)
+    await sending.value
+    XCTAssertEqual(composer.attachments.first?.isFinished, true, "the chip stays (the outcome is unknown)")
+    let removed = await composer.remove(composer.attachments[0].id)
+    XCTAssertTrue(removed)
+    let kept = await fake.currentAttachments().filter { $0.id == draftID && $0.commentId != nil }
+    XCTAssertEqual(kept.count, 1, "it was posted: never deleted")
+    let shown = store.stories.contains { story in
+      if case .comment(let c) = story { return c.attachments.contains { $0.id == draftID } }
+      return false
+    }
+    XCTAssertTrue(shown, "the stories reload and show it")
+  }
+
+  @MainActor
+  func testReSendingAfterALostAnswerDoesntPostTwice() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("once.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    composer.draft = "Here"
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    _ = try await fake.addCommentDirectly(taskID: DemoIDs.taskWithAttachments, body: "Here", attachmentIDs: [draftID])
+    await fake.failNext(.addComment, with: .transport())
+    await fake.release(.addComment, all: true)
+    await sending.value
+    XCTAssertEqual(composer.draft, "Here", "kept after the failure")
+    let before = await calls(fake, .addComment)
+    await composer.send()
+    let after = await calls(fake, .addComment)
+    XCTAssertEqual(after, before, "it had landed: not posted again")
+    XCTAssertEqual(composer.draft, "")
+    XCTAssertEqual(composer.attachments, [])
+  }
+
+  @MainActor
+  func testALostAnswerThatDidntLandStillDeletesOnRemoveAndDiscard() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("a.txt"))
+    composer.attach(fileAt: try file("b.txt"))
+    await waitUntil("uploaded") { composer.attachments.allSatisfy(\.isFinished) }
+    let ids = composer.attachments.compactMap(\.attachment?.id)
+    await fake.failNext(.addComment, with: .transport())
+    await composer.send()
+    let removed = await composer.remove(composer.attachments[0].id)
+    XCTAssertTrue(removed)
+    await composer.discard()
+    let left = await fake.currentAttachments().filter { ids.contains($0.id) }
+    XCTAssertEqual(left, [], "still drafts after asking: deleted")
+  }
+
+  @MainActor
   func testTwentyChipsAtMostAndFailedOnesDontCount() async throws {
     let (_, store) = await openTask(demoFake())
     let composer = store.composer

@@ -50,6 +50,7 @@ public final class TaskDetailStore {
     uploadSlots = slots
     self.workspaceID = workspaceID
     composer = CommentComposer(api: api, taskID: taskID, users: UserSearch(api: api, clock: clock), slots: slots)
+    composer.onReload = { [weak self] in await self?.reloadAfterUncertainSend() }
     composer.onSent = { [weak self] comment in
       guard let self else { return }
       self.stories.append(.comment(comment))
@@ -161,6 +162,19 @@ public final class TaskDetailStore {
         if let i = list.firstIndex(where: { $0.id == id }) { list[i] = refreshed }
       }
       replaceInComments(refreshed)
+    } catch {
+      recordFailure(error, lastError: &lastError)
+    }
+  }
+
+  /// A send's outcome was unknown and it turned out to have landed: show the comment and its attachments.
+  func reloadAfterUncertainSend() async {
+    do {
+      async let loadedStories = api.stories(taskID: taskID)
+      async let detail = api.task(taskID)
+      let (newStories, newDetail) = try await (loadedStories, detail)
+      stories = newStories
+      tasks.upsert(newDetail)
     } catch {
       recordFailure(error, lastError: &lastError)
     }
@@ -399,6 +413,27 @@ public final class CommentComposer {
 
   public func send() async {
     guard canSend else { return }
+    // A previous send failed without a definite answer: its chips may already be on a comment.
+    if !uncertain.isEmpty {
+      isSending = true
+      let landed: Bool
+      do {
+        landed = try await settleUncertain()
+      } catch {
+        isSending = false
+        recordFailure(error, lastError: &lastError)
+        return
+      }
+      isSending = false
+      if landed, draft.trimmingCharacters(in: .whitespacesAndNewlines) == uncertainBody {
+        // That send did land (the answer was lost): don't post it again.
+        uncertainBody = nil
+        draft = ""
+        lastError = nil
+        return
+      }
+      guard canSend else { return }
+    }
     isSending = true
     let sent = draft
     let posted = attachments.compactMap { chip in chip.attachment.map { (chip: chip.id, attachment: $0.id) } }
@@ -438,7 +473,62 @@ public final class CommentComposer {
         }
         try? await api.deleteAttachment(item.attachment)
       }
+      if !rejected {
+        // A transport error or a 5xx: the BE may have committed. Ask before any delete or re-send.
+        uncertain.formUnion(posted.map(\.chip).filter { id in attachments.contains { $0.id == id } })
+        uncertainBody = sent.trimmingCharacters(in: .whitespacesAndNewlines)
+      }
     }
+  }
+
+  /// Chips a failed send may have posted (transport error or 5xx): checked before any delete or re-send.
+  @ObservationIgnored private var uncertain: Set<UUID> = []
+  @ObservationIgnored private var uncertainBody: String?
+  /// Reloads the stories and the task (after an uncertain send turned out to have landed). Wired by TaskDetailStore.
+  @ObservationIgnored var onReload: (() async -> Void)?
+
+  /// Asks the server about every uncertain chip still here. One already on a comment (or no longer a draft, or gone)
+  /// leaves without a delete; one still a draft becomes certain again. True when any had landed (the stories are then
+  /// reloaded). Throws when the server can't say (the chips stay uncertain).
+  private func settleUncertain() async throws -> Bool {
+    var landed = false
+    for chip in attachments where uncertain.contains(chip.id) {
+      guard let attachmentID = chip.attachment?.id else { continue }
+      if try await stillADraft(attachmentID) {
+        uncertain.remove(chip.id)
+      } else {
+        uncertain.remove(chip.id)
+        chip.cleanUp()
+        attachments.removeAll { $0.id == chip.id }
+        landed = true
+      }
+    }
+    if landed { await onReload?() }
+    return landed
+  }
+
+  /// Whether the attachment is still an unposted draft (404: gone, so no). Throws when the server can't say.
+  private func stillADraft(_ attachmentID: String) async throws -> Bool {
+    do {
+      let current = try await api.attachment(attachmentID)
+      return current.draft && current.commentId == nil
+    } catch let error as APIError where error.code == .notFound {
+      return false
+    }
+  }
+
+  /// Deletes a chip's draft, unless it may already be on a comment (an uncertain send): then only if the server says
+  /// it is still a draft. When the server can't say, nothing is deleted (it sweeps unposted drafts after 24 h).
+  private func deleteDraft(_ chip: AttachmentUpload) async {
+    guard let attachmentID = chip.attachment?.id else { return }
+    if uncertain.remove(chip.id) != nil {
+      guard let draft = try? await stillADraft(attachmentID) else { return }
+      guard draft else {
+        await onReload?()
+        return
+      }
+    }
+    try? await api.deleteAttachment(attachmentID)
   }
 
   /// Chips discarded while being posted: deleted only if that send fails (a successful send keeps them).
@@ -517,7 +607,7 @@ public final class CommentComposer {
     let chip = attachments.remove(at: i)
     runner.cancel(id)
     chip.cleanUp()
-    if let draft = chip.attachment { try? await api.deleteAttachment(draft.id) }
+    await deleteDraft(chip)
     return true
   }
 
@@ -531,7 +621,7 @@ public final class CommentComposer {
     discardedWhileSending.formUnion(chips.map(\.id).filter { sendingIDs.contains($0) })
     chips.forEach { $0.cleanUp() }
     for chip in chips where !sendingIDs.contains(chip.id) {
-      if let draft = chip.attachment { try? await api.deleteAttachment(draft.id) }
+      await deleteDraft(chip)
     }
   }
 
