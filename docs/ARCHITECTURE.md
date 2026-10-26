@@ -590,6 +590,10 @@ public func submit() async                           // personal task assigned t
   against a freshly seeded BE: login/cookie, `/auth/me`, header + switch, lost access, my tasks,
   project tasks, create/patch/complete, comments, notifications, search, guest rules (W1, W7, W8).
   Locally they run against a throwaway BE DB, never the shared `asana` DB.
+- **Attachment contract tests** (`AttachmentContractTests`): draft upload then post, task-level upload, download +
+  304 revalidation, thumbnails, links, commenter rules, the local 100 MB pre-check and a raw 413. The 429 and 507
+  cases run only when `MP_BASE_URL_RATELIMIT` (a BE with `UPLOAD_RATE_LIMIT_MAX=3`) and `MP_BASE_URL_NOSPACE` (a BE
+  with a huge `STORAGE_MIN_FREE_BYTES`) are set.
 
 ## 6. Decisions
 
@@ -668,3 +672,224 @@ public func submit() async                           // personal task assigned t
     request with `CancellationError` before it is sent, so in-flight work (an edit, a renumber loop, a
     load a view started) never goes out under the next workspace's header. A late `confirm()` from a
     closed scope neither celebrates nor starts the session-wide cooldown. `WorkspaceScope.isClosed`.
+
+## 7. Attachments & links (v0.2: SPEC-MAC §8, BE SPEC §13 A1–A12)
+
+The Kit and Features part of attachments. The App adds Quick Look, Open With, drag and drop, paste,
+`NSOpenPanel`/`NSSavePanel` and the chips on top. Nothing here imports AppKit.
+
+### Kit: models
+
+```swift
+public enum AttachmentKind: OpenEnum { case file, link, other(String) }            // open: unknown kinds still decode
+public enum LinkPreviewStatus: OpenEnum { case pending, ready, failed, other(String) }
+
+public struct Attachment: Codable, Sendable, Hashable, Identifiable {
+  public var id, workspaceId, taskId: String
+  public var commentId: String?                  // nil = task-level
+  public var kind: AttachmentKind
+  public var draft: Bool
+  public var uploader: UserSummary
+  public var createdAt: Date
+  // FILE (nil for LINK)
+  public var name, mimeType: String?
+  public var size: Int64?
+  public var width, height: Int?
+  public var hasThumbnail: Bool
+  // LINK (nil for FILE)
+  public var url, title, description, siteName: String?
+  public var provider: String?                   // open string: google_docs, figma, … ; unknown = generic badge
+  public var previewStatus: LinkPreviewStatus?
+  public var hasIcon, hasImage: Bool
+  // Server-relative paths. Never build these by hand; pass them to the API / cache as they are.
+  public var contentPath, thumbnailPath, iconPath, imagePath: String?
+
+  public var displayName: String { get }         // FILE: name; LINK: title, else host, else url
+  public var isImage: Bool { get }               // FILE with an image/* mimeType
+  public var linkURL: URL? { get }               // LINK url, only when it is http/https (else nil: never open it)
+  public var host: String? { get }               // LINK host, for the card's "site" line
+}
+
+public enum AttachmentLimits {
+  public static let maxUploadBytes: Int64 = 104_857_600   // A1: pre-checked before any request
+  public static let maxPerComment = 20
+  public static let maxConcurrentUploads = 3              // A12, per user: the client queues the rest
+}
+public enum ThumbnailSize: String, Sendable { case small, large }   // fit 240 px / 1600 px
+public struct TransferProgress: Sendable, Hashable {
+  public var completed: Int64
+  public var total: Int64?                       // nil when unknown
+  public var fraction: Double? { get }           // 0…1, nil when total is unknown
+}
+public enum DownloadOutcome: Sendable, Equatable { case notModified, downloaded(etag: String?) }
+```
+
+- `TaskItem.attachmentCount: Int` (0 from servers before v1.3), `TaskDetail.attachments: [Attachment]`
+  (task-level and comment ones, newest first), `Comment.attachments: [Attachment]` (oldest first).
+  A comment's `body` may be empty when it has attachments.
+- `APIError.Code` gains `.payloadTooLarge` (413 `PAYLOAD_TOO_LARGE`, and the local 100 MB pre-check, which has
+  `status == nil`) and `.insufficientStorage` (507 `INSUFFICIENT_STORAGE`). 429 is the existing `.rateLimited`.
+  Any other new code stays `.unknown(raw)` and shows `message`.
+
+### Kit: API
+
+```swift
+extension MekariAPI {   // new protocol requirements
+  /// Streams `file` from disk (never loaded into memory) as one multipart part `file`. `draft: true` → `?draft=true`
+  /// (comment composer). `fileName` overrides the file's own name (e.g. "Pasted image 2026-10-26 at 10.02.03.png").
+  /// Throws `.payloadTooLarge` without a request when the file is over `maxUploadBytes`. Cancel the calling task
+  /// to cancel the upload (→ CancellationError). `progress` is called on an arbitrary thread.
+  func uploadAttachment(taskID: String, file: URL, fileName: String?, draft: Bool,
+                        progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> Attachment
+  func addLink(taskID: String, url: String, title: String?, draft: Bool) async throws -> Attachment
+  func attachment(_ id: String) async throws -> Attachment
+  func refreshLinkPreview(_ id: String) async throws -> Attachment
+  func deleteAttachment(_ id: String) async throws
+  func addComment(taskID: String, body: String, attachmentIDs: [String]) async throws -> Comment
+  /// GETs a server-relative attachment path (`contentPath`, `thumbnailPath`…) into `destination` (replaced
+  /// atomically), sending `If-None-Match` when `etag` is given. Only `/api/v1/attachments/…` paths are accepted.
+  func download(_ path: String, to destination: URL, ifNoneMatch etag: String?,
+                progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> DownloadOutcome
+  /// Small bytes in memory: thumbnails, link icons and images.
+  func attachmentData(_ path: String) async throws -> Data
+}
+// addComment(taskID:body:) stays, as attachmentIDs: [].
+```
+
+- Byte GETs are ID-addressed (no `X-Workspace-Id`), carry `Cookie: sid`, and never follow redirects.
+- Live: the upload writes a temp multipart file (copied in 1 MB chunks) and sends it with
+  `URLSession.uploadTask(fromFile:)`; the temp file is deleted afterwards. Downloads stream to a temp file
+  next to `destination` and are moved into place only on a 200.
+- Fake: uploads read the file's size and name only; `FakeSeed.demo` has a PNG, a PDF, a text file and a
+  LINK on `DemoIDs.taskWithAttachments`, plus a comment with an image. Fake bytes are served for every path.
+  New endpoints in `FakeEndpoint` (`uploadAttachment`, `addLink`, `deleteAttachment`, `download`, …) work
+  with `failNext` / `hold` / `release`.
+
+### Kit: AttachmentCache (downloads on disk, thumbnails in memory)
+
+```swift
+public actor AttachmentCache {
+  public static func defaultDirectory() -> URL                 // <Caches>/<bundle id>/Attachments (not sandboxed:
+                                                               // keeps wipe() inside our own folder)
+  public init(directory: URL, capacity: Int64 = 1 << 30,       // 1 GB LRU on disk
+              memoryCapacity: Int = 64 << 20,                  // thumbnails / icons / images in memory
+              quarantine: @escaping @Sendable (URL) -> Void = { Quarantine.mark($0) })
+  /// The local copy at <directory>/<attachmentId>/<sanitised name>: revalidated with its ETag (304 → the
+  /// cached file), downloaded otherwise. Offline with a cached copy → the cached copy. Concurrent calls for
+  /// one id share a download. Downloaded files get the quarantine xattr; never made executable.
+  public func file(for attachment: Attachment, using api: any MekariAPI,
+                   progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws -> URL
+  public func cachedFile(for attachmentID: String) -> URL?     // Show in Finder only after a download
+  public func data(at path: String, using api: any MekariAPI) async throws -> Data   // memory cache, by path
+  public func wipe()                                           // disk and memory; in-flight downloads are dropped
+  public var diskUsage: Int64 { get }
+}
+public enum Quarantine {
+  /// `com.apple.quarantine` = "0081;<hex time>;Mekari Project;<uuid>" on Apple platforms; no-op elsewhere.
+  public static func mark(_ file: URL)
+}
+```
+
+### Features
+
+```swift
+/// Task-level uploads, kept for the whole session (keyed by task id), so they survive closing the
+/// inspector or the task window and reappear when the task opens again. Cleared on sign-out; a lost
+/// workspace's uploads are cancelled. At most 3 run at once across the app (shared with composers).
+@MainActor @Observable public final class AttachmentUploads {
+  public func uploads(for taskID: String) -> [AttachmentUpload]     // oldest first; finished ones drop out
+  public var all: [AttachmentUpload] { get }
+}
+
+public struct AttachmentUpload: Identifiable, Sendable, Hashable {
+  public enum Source: Sendable, Hashable { case file(URL, name: String), link(url: String, title: String?) }
+  public enum State: Sendable, Hashable {
+    case queued                                  // waiting for one of the 3 slots
+    case uploading(TransferProgress)             // links: total nil while the server fetches the preview
+    case finishing                               // whole body sent: it lands even if cancelled, so cancel/remove refuse
+    case finished(Attachment)                    // composer chips only; task uploads leave the list
+    case failed(APIError)                        // server message kept (429/507); local 100 MB → .payloadTooLarge, status nil
+  }
+  public let id: UUID
+  public let taskID: String
+  public let source: Source
+  public var state: State
+  public let size: Int64?                        // FILE size when known
+  public let deletesFile: Bool                   // our temp file (pasted image): deleted when the upload leaves its list
+  public var name: String { get }                // file name or link title/url
+  public var isActive: Bool { get }              // queued, uploading or finishing
+  public var isFinishing, isFinished, isFailed: Bool { get }
+  public var attachment: Attachment? { get }     // when finished
+}
+
+// TaskDetailStore additions
+public var attachments: [Attachment] { get }        // task + comment ones, newest first (from TaskCache's detail)
+public var uploads: [AttachmentUpload] { get }      // this task's queued/uploading/finishing/failed task-level uploads
+public var canAttach: Bool { get }                  // = canEdit (COMMENTERs attach through the composer only)
+public func canDelete(_ attachment: Attachment) -> Bool   // uploader, project OWNER, workspace ADMIN; personal:
+                                                          // uploader or task creator (A7)
+public func attach(fileAt url: URL, fileName: String? = nil, deletesFile: Bool = false)   // task-level (non-draft)
+public func addLink(_ url: String, title: String?) async throws   // throws APIError (.validation on "url" locally
+                                                                  // first, else the server's) for the popover
+public func retryUpload(_ id: UUID)
+@discardableResult public func cancelUpload(_ id: UUID) -> Bool   // cancel queued/uploading, dismiss failed;
+                                                                  // false while finishing
+public func deleteAttachment(_ id: String) async    // optimistic: leaves the list and its comment at once (an
+                                                    // empty-body comment whose last attachment it was goes too);
+                                                    // restored + lastError if the server refuses (404 = gone, fine)
+public func refreshLinkPreview(_ id: String) async  // updates the task list and the copy in its comment
+
+// CommentComposer additions (drafts live here, so they survive re-renders; App calls discard() when the task closes)
+public private(set) var attachments: [AttachmentUpload]   // chips, in order added
+public private(set) var sendingIDs: Set<UUID>       // chips being posted: × disabled, remove() refuses them
+public var isUploading: Bool { get }                // a chip is queued/uploading/finishing
+public var hasRoomForAnother: Bool { get }          // < 20 chips, not counting failed ones (links in flight count)
+@discardableResult public func attach(fileAt url: URL, fileName: String? = nil, deletesFile: Bool = false) -> Bool
+                                                    // false = no room (20); over 100 MB → failed chip, no request
+@discardableResult public func attachLink(_ url: String, title: String?) async throws -> Bool
+                                                    // false = no room; throws APIError for the popover; a failed
+                                                    // link leaves no chip (so only file chips retry)
+public func retry(_ id: UUID)
+@discardableResult public func remove(_ id: UUID) async -> Bool   // cancels or DELETEs the draft; false while
+                                                                  // finishing or being posted
+public func discard() async                         // removes every chip; finishing ones are deleted once they land;
+                                                    // chips being posted are left to the send (deleted only if it fails)
+public var canSend: Bool { get }                    // text or ≥ 1 finished chip, nothing active, not sending;
+                                                    // failed chips don't block
+// send() posts the finished chips' ids as attachmentIds; on success it drops those and the chips that had failed;
+// chips added during the send stay for the next comment.
+
+/// Downloads for the current workspace through the session's AttachmentCache. Lives on WorkspaceScope.
+@MainActor @Observable public final class AttachmentFiles {
+  public private(set) var downloads: [String: TransferProgress]     // attachment id → progress while downloading
+  public private(set) var lastError: APIError?
+  public func file(for attachment: Attachment, revalidate: Bool = true) async -> URL?
+      // nil on failure (lastError) or cancellation. revalidate: a cached copy costs one 304 round trip;
+      // revalidate: false returns a cached copy at once (Quick Look stepping) and downloads only a missing one
+  public func cancelDownload(_ attachmentID: String)                // stops it for every caller (they get nil, no error)
+  public func cachedFile(for attachment: Attachment) async -> URL?
+  public func thumbnail(for attachment: Attachment, size: ThumbnailSize) async -> Data?   // nil if none/failed
+  public func linkIcon(for attachment: Attachment) async -> Data?
+  public func linkImage(for attachment: Attachment) async -> Data?
+  public func clearError()
+}
+
+// WorkspaceScope: public let attachmentFiles: AttachmentFiles
+// AppSession:     public let uploads: AttachmentUploads
+//                 public let attachmentCache: AttachmentCache
+//                 init(..., attachmentCache: AttachmentCache = AttachmentCache(directory: AttachmentCache.defaultDirectory()))
+//                 preview()/uiTest() use AttachmentCache.scratch() (a temp folder, no quarantine)
+```
+
+- **Approved decisions (orchestrator, 2026-10-26):** (a) the cache lives in `<Caches>/com.mekari.project/Attachments`,
+  not `<Caches>/Attachments`: the app isn't sandboxed, and `wipe()` must only ever delete our own folder.
+  (b) Upload file names go as UTF-8 in `filename="…"` with the browsers' escaping (`"` → `%22`, CR/LF → `%0D`/`%0A`),
+  as the web upload does; the BE (busboy) ignores `filename*`. `AttachmentContractTests` round-trips "Ünïcødé 文件.pdf".
+- **Wipe rules:** sign-out (including a 401) and losing access to a workspace wipe the whole cache (disk and
+  memory) and cancel the affected uploads. Composer drafts are cancelled when their scope closes; the server's
+  sweeper removes unposted drafts after 24 h.
+- **Pre-checks:** over 100 MB → a failed upload/chip (`.payloadTooLarge`, `status == nil`) and no request; a link
+  that isn't absolute http(s) → thrown `.validation` on `url`, no request; a 21st chip → `false`. User-facing copy
+  is the App's (the layer's `message`s are only fallbacks); server errors keep the server's `message`.
+- A finished task-level upload is inserted at the top of `attachments` of that task's store (when it is
+  open) and bumps `attachmentCount` in `TaskCache`.

@@ -117,7 +117,7 @@ let bob = UserSummary(id: DemoIDs.bob, name: "Bob Smith", email: "bob@example.co
 func signedInSession(_ fake: FakeMekariAPI, clock: TestClock = TestClock()) async -> AppSession {
   let session = AppSession(settings: InMemoryServerSettings(serverURL: URL(string: "https://demo.invalid")),
                            tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake }, clock: clock,
-                           calendar: TestTime.calendar, now: { TestTime.now })
+                           calendar: TestTime.calendar, now: { TestTime.now }, attachmentCache: .scratch())
   await session.start()
   await settle()
   return session

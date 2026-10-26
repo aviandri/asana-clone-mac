@@ -109,7 +109,7 @@ final class SignInServerTests: XCTestCase {
     transport.unreachable = unreachable
     let session = AppSession(settings: settings, tokens: Tokens(token, recorder), apiFactory: { url, tokens in
       LiveMekariAPI(baseURL: url, tokens: tokens, transport: transport)
-    })
+    }, attachmentCache: .scratch())
     return (session, recorder, settings)
   }
 

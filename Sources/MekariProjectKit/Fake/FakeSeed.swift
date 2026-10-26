@@ -26,6 +26,15 @@ public enum DemoIDs {
   /// "Fix login redirect" in Mobile App v2: a comment that mentions bob, 2 subtasks, followers.
   public static let taskWithStories = "50000000-0000-4000-8000-000000000001"
 
+  /// The task with the seeded attachments (BE §13 seed): a PNG, a PDF, a text file and a LINK, plus an
+  /// image on bob's comment. Same task as `taskWithStories`.
+  public static let taskWithAttachments = taskWithStories
+  public static let attachmentPNG = "a0000000-0000-4000-8000-000000000001"
+  public static let attachmentPDF = "a0000000-0000-4000-8000-000000000002"
+  public static let attachmentText = "a0000000-0000-4000-8000-000000000003"
+  public static let attachmentLink = "a0000000-0000-4000-8000-000000000004"
+  public static let attachmentCommentImage = "a0000000-0000-4000-8000-000000000005"
+
   public static let guestEmail = "guest@partner.test"
   public static let password = "password123"
 }
@@ -76,6 +85,8 @@ public struct FakeSeed: Sendable {
   public var followers: [String: [String]]
   public var stories: [String: [Story]]
   public var notifications: [NotificationRecord]
+  /// Every attachment, drafts and comment ones included. Comments get theirs when the fake renders them.
+  public var attachments: [Attachment] = []
 
   public static let empty = FakeSeed(users: [], workspaces: [], memberships: [], teams: [], projects: [], tasks: [],
                                      followers: [:], stories: [:], notifications: [])
@@ -243,15 +254,37 @@ private struct DemoBuilder {
 
     followers[login] = [DemoIDs.admin, DemoIDs.alice, DemoIDs.bob]
 
+    let createdID = nextID("70000000")
+    let assignedID = nextID("70000000")
+    let mentionCommentID = nextID("80000000")
+    let bobCommentID = nextID("80000000")
     let stories: [String: [Story]] = [
       login: [
-        .activity(Activity(id: nextID("70000000"), actor: admin, type: .created, createdAt: at(40))),
-        .activity(Activity(id: nextID("70000000"), actor: admin, type: .assigned,
+        .activity(Activity(id: createdID, actor: admin, type: .created, createdAt: at(40))),
+        .activity(Activity(id: assignedID, actor: admin, type: .assigned,
                            data: .object(["assigneeId": .string(alice.id)]), createdAt: at(41))),
-        .comment(Comment(id: nextID("80000000"), author: admin,
+        .comment(Comment(id: mentionCommentID, author: admin,
                          body: "Seen on staging too. \(Mentions.token(for: bob)) can you check the SSO callback?", createdAt: at(42))),
-        .comment(Comment(id: nextID("80000000"), author: bob, body: "On it, the `returnTo` param is dropped.", createdAt: at(50))),
+        .comment(Comment(id: bobCommentID, author: bob, body: "On it, the `returnTo` param is dropped.", createdAt: at(50))),
       ],
+    ]
+
+    func file(_ id: String, _ name: String, _ mime: String, size: Int64, by uploader: UserSummary, minute: Int,
+              comment: String? = nil, image: (Int, Int)? = nil) -> Attachment {
+      let base = "/api/v1/attachments/\(id)"
+      return Attachment(id: id, workspaceId: mk, taskId: login, commentId: comment, kind: .file, uploader: uploader,
+                        createdAt: at(minute), name: name, mimeType: mime, size: size, width: image?.0, height: image?.1,
+                        hasThumbnail: image != nil, contentPath: base + "/content", thumbnailPath: image != nil ? base + "/thumbnail" : nil)
+    }
+    let attachments = [
+      file(DemoIDs.attachmentPNG, "login-redirect.png", "image/png", size: 48_213, by: admin, minute: 43, image: (1280, 800)),
+      file(DemoIDs.attachmentPDF, "SSO flow.pdf", "application/pdf", size: 182_004, by: alice, minute: 44),
+      file(DemoIDs.attachmentText, "console.log", "text/plain", size: 2_310, by: bob, minute: 45),
+      Attachment(id: DemoIDs.attachmentLink, workspaceId: mk, taskId: login, kind: .link, uploader: alice, createdAt: at(46),
+                 url: "https://www.figma.com/file/demo/Login-flow", title: "Login flow", description: "Sign-in and SSO screens",
+                 siteName: "Figma", provider: "figma", previewStatus: .ready),
+      file(DemoIDs.attachmentCommentImage, "returnTo.png", "image/png", size: 30_512, by: bob, minute: 50, comment: bobCommentID,
+           image: (900, 600)),
     ]
 
     func notification(_ id: String, _ ws: String, _ type: NotificationType, read: Bool, actor: UserSummary, task taskID: String,
@@ -273,6 +306,6 @@ private struct DemoBuilder {
     ]
 
     return FakeSeed(users: users, workspaces: workspaces, memberships: memberships, teams: teams, projects: projects,
-                    tasks: tasks, followers: followers, stories: stories, notifications: notifications)
+                    tasks: tasks, followers: followers, stories: stories, notifications: notifications, attachments: attachments)
   }
 }

@@ -1,10 +1,13 @@
-import Foundation
 // Swift 5.10's Linux Foundation doesn't mark URL, URLRequest, HTTPURLResponse & co. Sendable yet
 // (Darwin's and Swift 6's do), so take its types as pre-concurrency there.
 #if canImport(FoundationNetworking) && compiler(<6.0)
+@preconcurrency import Foundation
 @preconcurrency import FoundationNetworking
 #elseif canImport(FoundationNetworking)
+import Foundation
 import FoundationNetworking
+#else
+import Foundation
 #endif
 
 /// `MekariAPI` over HTTP (SPEC-MAC §4).
@@ -16,6 +19,8 @@ import FoundationNetworking
 ///   collection endpoint with the header set emits `.workspaceLost`.
 public actor LiveMekariAPI: MekariAPI {
   public static let workspaceHeader = "X-Workspace-Id"
+  /// Idle timeout for uploads and downloads (other requests keep the transport's 30 s).
+  public static let transferTimeout: TimeInterval = 300
 
   public nonisolated let events: AsyncStream<APIEvent>
   private nonisolated let eventSink: AsyncStream<APIEvent>.Continuation
@@ -151,9 +156,20 @@ public actor LiveMekariAPI: MekariAPI {
     return feed.data
   }
 
-  public func addComment(taskID: String, body: String) async throws -> Comment {
-    struct Body: Encodable { let body: String }
-    return try await call(.post, "/tasks/\(taskID)/comments", body: Body(body: body))
+  public func addComment(taskID: String, body: String, attachmentIDs: [String]) async throws -> Comment {
+    struct Body: Encodable {
+      let body: String
+      let attachmentIds: [String]?
+      // Without attachments the body is the v1 shape, so older servers keep working.
+      func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(body, forKey: .body)
+        try c.encodeIfPresent(attachmentIds, forKey: .attachmentIds)
+      }
+      enum CodingKeys: String, CodingKey { case body, attachmentIds }
+    }
+    return try await call(.post, "/tasks/\(taskID)/comments",
+                          body: Body(body: body, attachmentIds: attachmentIDs.isEmpty ? nil : attachmentIDs))
   }
 
   public func editComment(_ id: String, body: String) async throws -> Comment {
@@ -181,6 +197,99 @@ public actor LiveMekariAPI: MekariAPI {
 
   public func search(_ query: String) async throws -> SearchResults {
     try await get("/search", query: ["q": query])
+  }
+
+  // MARK: - Attachments & links
+
+  public func uploadAttachment(taskID: String, file: URL, fileName: String?, draft: Bool,
+                               progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> Attachment {
+    let size = try Multipart.fileSize(file)
+    guard size <= AttachmentLimits.maxUploadBytes else { throw AttachmentLimits.tooLarge() }
+    try Task.checkCancellation()
+    let name = fileName ?? file.lastPathComponent
+    // Built off the actor (copying up to 100 MB must not hold up other requests), and cancelled with the caller.
+    let copying = Task.detached { try Multipart.writeTempFile(copying: file, fileName: name) }
+    let body = try await withTaskCancellationHandler { try await copying.value } onCancel: { copying.cancel() }
+    defer { try? FileManager.default.removeItem(at: body.url) }
+    let path = "/tasks/\(taskID)/attachments"
+    var prepared = prepare(.post, url: url(path, query: ["draft": draft ? "true" : nil]), path: path)
+    prepared.request.setValue("application/json", forHTTPHeaderField: "Accept")
+    prepared.request.setValue("multipart/form-data; boundary=\(body.boundary)", forHTTPHeaderField: "Content-Type")
+    prepared.request.setValue(String(body.length), forHTTPHeaderField: "Content-Length")
+    // The server may sit quiet for a while after the last byte (storing, thumbnails): don't time out and retry
+    // into a duplicate.
+    prepared.request.timeoutInterval = LiveMekariAPI.transferTimeout
+    let overhead = body.headerLength
+    let (data, response) = try await perform { [transport, request = prepared.request] in
+      try await transport.upload(request, fromFile: body.url) { sent, _ in
+        progress(TransferProgress(completed: min(size, max(0, sent - overhead)), total: size))
+      }
+    }
+    try check(response, data, prepared)
+    return try decode(Attachment.self, from: data)
+  }
+
+  public func addLink(taskID: String, url: String, title: String?, draft: Bool) async throws -> Attachment {
+    struct Body: Encodable { let url: String; let title: String?; let draft: Bool }
+    return try await call(.post, "/tasks/\(taskID)/attachments/link", body: Body(url: url, title: title, draft: draft))
+  }
+
+  public func attachment(_ id: String) async throws -> Attachment {
+    try await get("/attachments/\(id)")
+  }
+
+  public func refreshLinkPreview(_ id: String) async throws -> Attachment {
+    try await call(.post, "/attachments/\(id)/refresh-preview")
+  }
+
+  public func deleteAttachment(_ id: String) async throws {
+    _ = try await send(.delete, "/attachments/\(id)")
+  }
+
+  public func download(_ path: String, to destination: URL, ifNoneMatch etag: String?,
+                       progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> DownloadOutcome {
+    var prepared = try prepareBytes(path)
+    prepared.request.timeoutInterval = LiveMekariAPI.transferTimeout
+    if let etag { prepared.request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+    let (data, response) = try await perform { [transport, request = prepared.request] in
+      try await transport.download(request, to: destination) { received, expected in
+        progress(TransferProgress(completed: received, total: expected))
+      }
+    }
+    try check(response, data, prepared, allowNotModified: true)
+    if response.statusCode == 304 { return .notModified }
+    return .downloaded(etag: LiveMekariAPI.header("ETag", in: response))
+  }
+
+  public func attachmentData(_ path: String) async throws -> Data {
+    let prepared = try prepareBytes(path)
+    let (data, response) = try await perform { [transport, request = prepared.request] in try await transport.send(request) }
+    try check(response, data, prepared)
+    return data
+  }
+
+  /// A GET of a server-given attachment path: the cookie, no workspace header (ID-addressed, BE §13).
+  private func prepareBytes(_ path: String) throws -> Prepared {
+    guard AttachmentLinks.isAttachmentPath(path), let target = URL(string: serverRoot + path) else {
+      throw APIError(code: .validation, message: "Not an attachment address")
+    }
+    var prepared = prepare(.get, url: target, path: path, workspaceHeader: false)
+    prepared.request.setValue("*/*", forHTTPHeaderField: "Accept")
+    return prepared
+  }
+
+  /// The server URL without a trailing "/", which server-relative paths (`/api/v1/…`) are appended to.
+  private var serverRoot: String {
+    var root = server.absoluteString
+    while root.hasSuffix("/") { root.removeLast() }
+    return root
+  }
+
+  static func header(_ name: String, in response: HTTPURLResponse) -> String? {
+    for (key, value) in response.allHeaderFields {
+      if let key = key as? String, key.caseInsensitiveCompare(name) == .orderedSame { return value as? String }
+    }
+    return nil
   }
 
   // MARK: - Plumbing
@@ -222,13 +331,30 @@ public actor LiveMekariAPI: MekariAPI {
 
   private func send<B: Encodable>(_ method: Method, _ path: String, query: [String: String?] = [:], body: B?,
                                   session: SessionChoice = .stored) async throws -> (Data, HTTPURLResponse) {
-    var request = URLRequest(url: url(path, query: query))
-    request.httpMethod = method.rawValue
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    var prepared = prepare(method, url: url(path, query: query), path: path, session: session)
+    prepared.request.setValue("application/json", forHTTPHeaderField: "Accept")
     if let body {
-      request.httpBody = try encoder.encode(body)
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+      prepared.request.httpBody = try encoder.encode(body)
+      prepared.request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     }
+    let (data, response) = try await perform { [transport, request = prepared.request] in try await transport.send(request) }
+    try check(response, data, prepared)
+    return (data, response)
+  }
+
+  /// A request with the session cookie and (where it applies) the workspace header, plus what was sent.
+  private struct Prepared {
+    var request: URLRequest
+    let method: Method
+    let path: String
+    let sentToken: String?
+    let sentWorkspace: String?
+  }
+
+  private func prepare(_ method: Method, url: URL, path: String, session: SessionChoice = .stored,
+                       workspaceHeader: Bool = true) -> Prepared {
+    var request = URLRequest(url: url)
+    request.httpMethod = method.rawValue
     let sentToken: String?
     switch session {
     case .stored: sentToken = tokens.load()
@@ -238,12 +364,17 @@ public actor LiveMekariAPI: MekariAPI {
     if let sentToken {
       request.setValue("\(SessionCookie.name)=\(sentToken)", forHTTPHeaderField: "Cookie")
     }
-    let sentWorkspace = LiveMekariAPI.sendsWorkspaceHeader(path) ? workspaceID : nil
+    let sentWorkspace = workspaceHeader && LiveMekariAPI.sendsWorkspaceHeader(path) ? workspaceID : nil
     if let sentWorkspace {
       request.setValue(sentWorkspace, forHTTPHeaderField: LiveMekariAPI.workspaceHeader)
     }
+    return Prepared(request: request, method: method, path: path, sentToken: sentToken, sentWorkspace: sentWorkspace)
+  }
 
-    let (data, response) = try await perform(request)
+  /// Throws for redirects and errors, ending the session on a 401 for the token still stored and
+  /// reporting a lost workspace on a scoped collection's 404. `allowNotModified` lets a 304 through.
+  private func check(_ response: HTTPURLResponse, _ data: Data, _ prepared: Prepared, allowNotModified: Bool = false) throws {
+    if allowNotModified, response.statusCode == 304 { return }
     if (300..<400).contains(response.statusCode) {
       // The transport never follows redirects (they'd carry the Cookie, or re-post a login, elsewhere).
       throw APIError(code: .unknown("REDIRECT"), status: response.statusCode,
@@ -255,22 +386,27 @@ public actor LiveMekariAPI: MekariAPI {
         // Only a 401 for the session we still hold ends it: a late answer to a request sent with an
         // older token (the poller, another window) must not sign out a fresh session. Login and
         // logout never emit.
-        if let sentToken, path != "/auth/login", path != "/auth/logout", tokens.clear(ifCurrent: sentToken) {
+        if let sentToken = prepared.sentToken, prepared.path != "/auth/login", prepared.path != "/auth/logout",
+           tokens.clear(ifCurrent: sentToken) {
           eventSink.yield(.unauthorized)
         }
-      } else if response.statusCode == 404, let sentWorkspace, LiveMekariAPI.isScopedCollection(method, path) {
+      } else if response.statusCode == 404, let sentWorkspace = prepared.sentWorkspace,
+                LiveMekariAPI.isScopedCollection(prepared.method, prepared.path) {
         eventSink.yield(.workspaceLost(workspaceID: sentWorkspace))
       }
       throw error
     }
-    return (data, response)
+  }
+
+  private func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    try await perform { [transport] in try await transport.send(request) }
   }
 
   /// Cancellation is passed through as `CancellationError` (never "Can't reach the server").
-  private func perform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+  private func perform(_ operation: @Sendable () async throws -> (Data, HTTPURLResponse)) async throws -> (Data, HTTPURLResponse) {
     do {
       try Task.checkCancellation()
-      return try await transport.send(request)
+      return try await operation()
     } catch let error as APIError {
       throw error
     } catch is CancellationError {
