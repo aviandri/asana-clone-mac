@@ -218,6 +218,21 @@ final class AttachmentStoreTests: XCTestCase {
   }
 
   @MainActor
+  func testA429AfterTheWholeBodyIsNotResent() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    await fake.failNextUploadAfterBody(with: APIError(code: .rateLimited, status: 429, message: "Draft quota"))
+    store.composer.attach(fileAt: try file("quota.txt"))
+    await waitUntil("failed") { store.composer.attachments.first?.isFailed == true }
+    let uploadCalls = await calls(fake, .uploadAttachment)
+    XCTAssertEqual(uploadCalls, 1, "a body that was fully sent isn't sent again automatically")
+    guard case .failed(let error)? = store.composer.attachments.first?.state else { return XCTFail() }
+    XCTAssertEqual(error.code, .rateLimited)
+    let removed = await store.composer.remove(store.composer.attachments[0].id)
+    XCTAssertTrue(removed, "not stuck in finishing")
+  }
+
+  @MainActor
   func testLinksAndRefreshesWaitForAnUploadSlot() async throws {
     let fake = demoFake()
     let (_, store) = await openTask(fake)
@@ -409,6 +424,26 @@ final class AttachmentStoreTests: XCTestCase {
     await sending.value
     let kept = await fake.currentAttachments().filter { $0.id == draftID }
     XCTAssertEqual(kept.count, 1, "a transport failure isn't a rejection: the posted attachment stays")
+  }
+
+  @MainActor
+  func testAProxy5xxAfterTheServerCommittedKeepsTheAttachments() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("kept502.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    await composer.discard()
+    _ = try await fake.addCommentDirectly(taskID: DemoIDs.taskWithAttachments, attachmentIDs: [draftID])
+    await fake.failNext(.addComment, with: APIError(code: .unknown("HTTP 502"), status: 502, message: "Bad gateway"))
+    await fake.release(.addComment, all: true)
+    await sending.value
+    let kept = await fake.currentAttachments().filter { $0.id == draftID }
+    XCTAssertEqual(kept.count, 1, "a 5xx isn't a definite rejection")
   }
 
   @MainActor

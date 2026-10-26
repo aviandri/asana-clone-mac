@@ -427,10 +427,11 @@ public final class CommentComposer {
     } catch {
       recordFailure(error, lastError: &lastError)
       // Chips discarded while they were being posted: if the comment didn't take them, their drafts go now. Only a
-      // definite HTTP rejection says so; after a transport failure the comment may have landed, so ask first.
+      // 4xx says so for sure; after a transport failure or a 5xx (a proxy's 502/504 once the BE committed) the
+      // comment may have landed, so ask first.
       let orphaned = posted.filter { item in discardedWhileSending.contains(item.chip) }
       discardedWhileSending.subtract(orphaned.map(\.chip))
-      let rejected = (error as? APIError).map { $0.status != nil } ?? false
+      let rejected = (error as? APIError)?.status.map { (400..<500).contains($0) } ?? false
       for item in orphaned {
         if !rejected {
           guard let current = try? await api.attachment(item.attachment), current.commentId == nil, current.draft else { continue }
