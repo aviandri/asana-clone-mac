@@ -76,6 +76,8 @@ enum AppBootstrap {
     #if DEBUG || UITEST
     static let uiTestArgument = "-UITestFakeAPI"
     static let uiTestSignedOutArgument = "-UITestSignedOut"
+    /// UI tests: attachment downloads stay in progress (the fake parks them), so the download bar can be tested.
+    static let uiTestHoldDownloadsArgument = "-UITestHoldDownloads"
     #endif
 
     /// The fake-API launch flags exist only in Debug and UITest builds: the shipped Release app has no
@@ -91,6 +93,12 @@ enum AppBootstrap {
     static func makeSession(arguments: [String] = ProcessInfo.processInfo.arguments) -> AppSession {
         #if DEBUG || UITEST
         if isUITest(arguments: arguments) {
+            if arguments.contains(uiTestHoldDownloadsArgument) {
+                let fake = FakeMekariAPI(signedInAs: "alice@example.com")
+                Task { await fake.hold(.download) }
+                return AppSession(settings: InMemoryServerSettings(serverURL: URL(string: "https://demo.invalid")),
+                                  tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake }, attachmentCache: .scratch())
+            }
             return AppSession.uiTest(signedIn: !arguments.contains(uiTestSignedOutArgument))
         }
         #endif

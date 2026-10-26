@@ -80,6 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { LocalNotifier.shared.install() }
     }
 
+    /// Apps may have been installed or removed meanwhile: Open With ▸ looks them up again.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        MainActor.assumeIsolated { OpenWithApps.clearCache() }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         !(UserDefaults.standard.object(forKey: SettingsKey.showInMenuBar) as? Bool ?? true)
     }
