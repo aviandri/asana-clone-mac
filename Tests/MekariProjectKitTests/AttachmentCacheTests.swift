@@ -37,7 +37,10 @@ final class AttachmentCacheTests: XCTestCase {
     let url = try await cache.file(for: pdf, using: fake)
     XCTAssertEqual(url, directory.appendingPathComponent(DemoIDs.attachmentPDF).appendingPathComponent("SSO flow.pdf"))
     XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-    XCTAssertEqual(marked.files, [url])
+    // Quarantined as the temp file next to it, before the move and the chmod (the xattr moves with the file).
+    XCTAssertEqual(marked.files.count, 1)
+    XCTAssertEqual(marked.files.first?.deletingLastPathComponent(), url.deletingLastPathComponent())
+    XCTAssertEqual(marked.files.first?.pathExtension, "part")
     let cachedURL = await cache.cachedFile(for: pdf.id)
     XCTAssertEqual(cachedURL, url)
 
@@ -47,6 +50,74 @@ final class AttachmentCacheTests: XCTestCase {
     XCTAssertEqual(calls, 2, "a cached copy is revalidated")
     XCTAssertEqual(marked.files.count, 1, "a 304 doesn't re-mark or rewrite")
   }
+
+  func testCachedFilesAreReadOnlyAndStillReplacedAndWiped() async throws {
+    let pdf = try await seeded(DemoIDs.attachmentPDF)
+    let url = try await cache().file(for: pdf, using: fake)
+    let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+    XCTAssertEqual(mode, 0o444, "apps that open it can't save into the cache")
+
+    // A changed ETag (here: a tampered index) means a re-download, which must replace the read-only copy.
+    let indexURL = directory.appendingPathComponent("index.json")
+    var index = try JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as! [String: [String: Any]]
+    index[pdf.id]?["etag"] = "\"stale\""
+    try JSONSerialization.data(withJSONObject: index).write(to: indexURL)
+    let reopened = cache()
+    let again = try await reopened.file(for: pdf, using: fake)
+    XCTAssertEqual(again, url)
+    let calls = await downloads()
+    XCTAssertEqual(calls, 2, "the stale ETag was a 200, not a 304")
+    let leftovers = try FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)
+    XCTAssertEqual(leftovers, [url.lastPathComponent], "replaced, no .part left")
+
+    await reopened.wipe()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), "read-only files don't stop a wipe")
+  }
+
+  func testAFileThatCantBeQuarantinedIsNeverServed() async throws {
+    let pdf = try await seeded(DemoIDs.attachmentPDF)
+    let refusing = AttachmentCache(directory: directory, quarantine: { _ in throw CocoaError(.fileWriteNoPermission) })
+    do {
+      _ = try await refusing.file(for: pdf, using: fake)
+      XCTFail("expected a failure")
+    } catch let error as APIError {
+      XCTAssertEqual(error.message, "Couldn't save the file")
+    }
+    let cached = await refusing.cachedFile(for: pdf.id)
+    XCTAssertNil(cached)
+    let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent(pdf.id).path)) ?? []
+    XCTAssertEqual(leftovers, [], "no unquarantined copy or .part stays")
+  }
+
+  func testTheQuarantineIsAppliedBeforeTheFileTurnsReadOnly() async throws {
+    let modes = MarkedFiles()
+    let cache = AttachmentCache(directory: directory, quarantine: { url in
+      // Record whether the owner could still write the file when it was quarantined (setxattr needs that on macOS).
+      // Mode bits, not isWritableFile: CI's Linux containers run as root, which may write anything.
+      if (AttachmentCacheTests.mode(of: url) ?? 0) & 0o200 != 0 { modes.add(url) }
+    })
+    let url = try await cache.file(for: try await seeded(DemoIDs.attachmentPDF), using: fake)
+    XCTAssertEqual(modes.files.count, 1, "quarantined while still writable")
+    XCTAssertEqual(AttachmentCacheTests.mode(of: url), 0o444, "then made read-only")
+  }
+
+  static func mode(of url: URL) -> Int? {
+    let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+    return (attributes?[.posixPermissions] as? NSNumber)?.intValue
+  }
+
+  #if canImport(Darwin)
+  /// The real xattr on the final 0444 file (runs in the macOS CI jobs; Quarantine is a no-op on Linux).
+  func testTheRealQuarantineXattrIsOnTheReadOnlyFile() async throws {
+    let cache = AttachmentCache(directory: directory) // the default: Quarantine.mark
+    let url = try await cache.file(for: try await seeded(DemoIDs.attachmentPDF), using: fake)
+    let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+    XCTAssertEqual(mode, 0o444)
+    let value = try XCTUnwrap(Quarantine.value(of: url), "com.apple.quarantine is missing")
+    XCTAssertTrue(value.hasPrefix("0081;"), value)
+    XCTAssertTrue(value.contains(";Mekari Project;"), value)
+  }
+  #endif
 
   func testOfflineServesTheCachedCopyButNotNothing() async throws {
     let cache = cache()

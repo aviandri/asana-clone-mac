@@ -29,7 +29,7 @@ public actor AttachmentCache {
   public let directory: URL
   private let capacity: Int64
   private let memoryCapacity: Int
-  private let quarantine: @Sendable (URL) -> Void
+  private let quarantine: @Sendable (URL) throws -> Void
   private let now: @Sendable () -> Date
 
   private var entries: [String: Entry] = [:]
@@ -42,7 +42,7 @@ public actor AttachmentCache {
   private var memoryBytes = 0
 
   public init(directory: URL, capacity: Int64 = 1 << 30, memoryCapacity: Int = 64 << 20,
-              quarantine: @escaping @Sendable (URL) -> Void = { Quarantine.mark($0) }, now: @escaping @Sendable () -> Date = { Date() }) {
+              quarantine: @escaping @Sendable (URL) throws -> Void = { try Quarantine.mark($0) }, now: @escaping @Sendable () -> Date = { Date() }) {
     self.directory = directory
     self.capacity = capacity
     self.memoryCapacity = memoryCapacity
@@ -113,14 +113,21 @@ public actor AttachmentCache {
     } catch {
       throw APIError(code: .unknown("client"), message: "Couldn't save the file")
     }
+    // The download lands in a temp file, moved into place below (the cached copy is read-only, so it is replaced by
+    // removing it first, never overwritten in place).
+    let temp = folder.appendingPathComponent(".\(UUID().uuidString).part")
     let outcome: DownloadOutcome
     do {
       // A cached copy under another name (the server renamed nothing, but be safe) is revalidated only in place.
       let etag = cached?.name == destination.lastPathComponent ? cached?.etag : nil
-      outcome = try await api.download(path, to: destination, ifNoneMatch: etag, progress: progress)
+      outcome = try await api.download(path, to: temp, ifNoneMatch: etag, progress: progress)
     } catch let error as APIError where error.code == .transport {
+      remove(temp)
       guard let cached, started == generation else { throw error }
       return touch(id, cached)
+    } catch {
+      remove(temp)
+      throw error
     }
     guard started == generation else {
       // Wiped while downloading (sign-out, lost access): the bytes must not stay.
@@ -135,7 +142,19 @@ public actor AttachmentCache {
       if let cached, cached.name != destination.lastPathComponent {
         remove(folder.appendingPathComponent(cached.name))
       }
-      quarantine(destination)
+      do {
+        // Quarantine first: setxattr needs write access to the file, so it must happen before the chmod below. A file
+        // that can't be quarantined is never served (Gatekeeper must check what's opened from attachments).
+        try quarantine(temp)
+        remove(destination) // a read-only cached copy: removing needs only the folder's write permission
+        try FileManager.default.moveItem(at: temp, to: destination)
+        // Read-only, so an app that opens it (Open, Open With) offers Save As / Duplicate instead of editing the copy
+        // the cache serves back as the attachment.
+        try FileManager.default.setAttributes([.posixPermissions: AttachmentCache.cachedFileMode], ofItemAtPath: destination.path)
+      } catch {
+        remove(temp)
+        throw APIError(code: .unknown("client"), message: "Couldn't save the file")
+      }
       let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path)
       let size = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
       entries[id] = Entry(name: destination.lastPathComponent, etag: etag, size: size, lastUsed: now())
@@ -255,6 +274,9 @@ public actor AttachmentCache {
     try? FileManager.default.removeItem(at: directory)
   }
 
+  /// Downloaded files are r--r--r-- (0444).
+  public static let cachedFileMode: Int = 0o444
+
   /// Attachment ids are UUIDs; only those name folders here.
   static func isSafeID(_ id: String) -> Bool {
     UUID(uuidString: id) != nil && !id.contains("/")
@@ -285,14 +307,30 @@ public enum Quarantine {
     String(format: "0081;%08x;%@;%@", Int(date.timeIntervalSince1970), agent, id.uuidString)
   }
 
-  /// Sets `com.apple.quarantine` on Apple platforms; does nothing elsewhere.
-  public static func mark(_ file: URL) {
+  /// Sets `com.apple.quarantine` on Apple platforms (does nothing elsewhere). Throws when it can't (e.g. EACCES on a
+  /// read-only file), so an unquarantined copy is never served.
+  public static func mark(_ file: URL) throws {
     #if canImport(Darwin)
     let value = Array(value().utf8)
-    _ = file.withUnsafeFileSystemRepresentation { path in
-      guard let path else { return Int32(-1) }
+    let result = file.withUnsafeFileSystemRepresentation { path -> Int32 in
+      guard let path else { return -1 }
       return setxattr(path, attribute, value, value.count, 0, 0)
     }
+    guard result == 0 else { throw CocoaError(.fileWriteNoPermission, userInfo: [NSFilePathErrorKey: file.path]) }
+    #endif
+  }
+
+  /// The `com.apple.quarantine` value on `file`, or nil (Apple platforms; always nil elsewhere).
+  public static func value(of file: URL) -> String? {
+    #if canImport(Darwin)
+    return file.withUnsafeFileSystemRepresentation { path -> String? in
+      guard let path else { return nil }
+      var buffer = [UInt8](repeating: 0, count: 256)
+      let length = getxattr(path, attribute, &buffer, buffer.count, 0, 0)
+      return length > 0 ? String(decoding: buffer.prefix(length), as: UTF8.self) : nil
+    }
+    #else
+    return nil
     #endif
   }
 }
