@@ -11,6 +11,12 @@ struct TaskInspectorView: View {
     @Bindable var store: TaskDetailStore
     /// Open another task (subtask / parent) in the same inspector or window.
     var onOpenTask: (String) -> Void = { _ in }
+    /// Files dragged over the inspector (editors attach them to the task).
+    @State private var dropTargeted = false
+
+    private var attachmentContext: AttachmentContext {
+        AttachmentContext(actions: AttachmentActions(session: session, scope: scope, store: store))
+    }
 
     var body: some View {
         Group {
@@ -30,10 +36,12 @@ struct TaskInspectorView: View {
                             }
                         }
                         if loaded {
+                            AttachmentsSection(context: attachmentContext)
                             SubtasksSection(store: store, subtasks: task.subtasks, onOpenTask: onOpenTask)
                             FollowersSection(scope: scope, store: store, followers: task.followers)
                             Divider()
-                            StoriesSection(stories: store.stories, me: scope.me, canDelete: { $0.author.id == scope.me.id }) { id in
+                            StoriesSection(stories: store.stories, me: scope.me, canDelete: { $0.author.id == scope.me.id },
+                                           attachmentContext: attachmentContext) { id in
                                 Task { await store.deleteComment(id) }
                             }
                         } else {
@@ -46,6 +54,20 @@ struct TaskInspectorView: View {
                         }
                     }
                     .padding(16)
+                }
+                .overlay {
+                    if dropTargeted {
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                            .padding(4)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .onDrop(of: AttachmentDrop.types, isTargeted: Binding(get: { dropTargeted }, set: { dropTargeted = $0 && store.canAttach })) { providers in
+                    attachDropped(providers)
+                }
+                .background {
+                    PasteCatcher { responder in pasteIntoTask(firstResponder: responder) }
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if loaded {
@@ -67,6 +89,25 @@ struct TaskInspectorView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("task.inspector")
         .task { await store.load() }
+    }
+
+    /// Files dropped on the inspector become task-level attachments (editors only; the composer takes
+    /// drops for commenters). Folders are left out.
+    private func attachDropped(_ providers: [NSItemProvider]) -> Bool {
+        guard store.task != nil, store.canAttach else { return false }
+        Task {
+            for file in await AttachmentDrop.files(from: providers).files { store.attach(fileAt: file.url) }
+        }
+        return true
+    }
+
+    /// ⌘V of files or an image with no text field focused attaches them to the task (editors only); in a
+    /// text field it's an ordinary paste (the composer takes its own).
+    private func pasteIntoTask(firstResponder: NSResponder?) -> Bool {
+        guard store.task != nil, store.canAttach, !(firstResponder is NSText),
+              let files = AttachmentPaste.files(from: .general) else { return false }
+        for file in files { store.attach(fileAt: file.url, fileName: file.name, deletesFile: file.deletesFile) }
+        return true
     }
 
     /// Commits from onDisappear can fire while a workspace switch replaces the scope; by then requests

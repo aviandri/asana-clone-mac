@@ -8,6 +8,8 @@ struct StoriesSection: View {
     let stories: [Story]
     let me: UserSummary
     let canDelete: (Comment) -> Bool
+    /// Attachments under comment bodies (nil: shown without them, e.g. in previews).
+    var attachmentContext: AttachmentContext? = nil
     let onDelete: (String) -> Void
 
     var body: some View {
@@ -19,7 +21,7 @@ struct StoriesSection: View {
             ForEach(stories) { story in
                 switch story {
                 case .comment(let comment):
-                    CommentRow(comment: comment)
+                    CommentRow(comment: comment, attachmentContext: attachmentContext)
                         .contextMenu {
                             if canDelete(comment) {
                                 Button("Delete Comment", role: .destructive) { onDelete(comment.id) }
@@ -36,26 +38,37 @@ struct StoriesSection: View {
 @MainActor
 struct CommentRow: View {
     let comment: Comment
+    var attachmentContext: AttachmentContext? = nil
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Avatar(user: comment.author, size: 26)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(comment.author.name).fontWeight(.semibold)
-                    Text(Formatting.relative(comment.createdAt))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if comment.editedAt != nil {
-                        Text("(edited)").font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                Avatar(user: comment.author, size: 26)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(comment.author.name).fontWeight(.semibold)
+                        Text(Formatting.relative(comment.createdAt))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if comment.editedAt != nil {
+                            Text("(edited)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    // Empty when the comment is only attachments (BE §13).
+                    if !comment.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(CommentText.attributed(comment.segments))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                Text(CommentText.attributed(comment.segments))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
+            // The attachments stay separate elements, each with its own actions.
+            if let attachmentContext, !comment.attachments.isEmpty {
+                CommentAttachmentsView(attachments: comment.attachments, context: attachmentContext)
+                    .padding(.leading, 34)
             }
         }
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -94,8 +107,15 @@ struct ActivityRow: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// The file name or link title an attachment activity carries (`data.name`).
+    private var attachmentName: String? {
+        activity.data["name"]?.stringValue.flatMap { $0.isEmpty ? nil : "“\($0)”" }
+    }
+
     private var verb: String {
         switch activity.type {
+        case ActivityType.attachmentAdded: "attached \(attachmentName ?? "a file")"
+        case ActivityType.attachmentRemoved: "removed \(attachmentName ?? "an attachment")"
         case .created: "created this task"
         case .completed: "completed this task"
         case .reopened: "reopened this task"
@@ -112,6 +132,7 @@ struct ActivityRow: View {
 
     private var icon: String {
         switch activity.type {
+        case ActivityType.attachmentAdded, ActivityType.attachmentRemoved: "paperclip"
         case .created: "plus.circle"
         case .completed: "checkmark.circle"
         case .reopened: "arrow.uturn.backward.circle"
@@ -128,10 +149,16 @@ struct ActivityRow: View {
 /// Composer pinned under the stories: ⌘↩ sends; a trailing "@word" offers people to mention.
 /// The field sits in a raised box with a visible border (rc1 QA U1: a roundedBorder field and a
 /// default-style button were dark grey on dark grey) and gets the full width.
+/// Attachments (BE §13): the paperclip, files dropped on the composer, and ⌘V of files or an image
+/// while the field has focus become draft chips under the field. Leaving the task discards them.
 @MainActor
 struct CommentComposerView: View {
     @Bindable var composer: CommentComposer
     @FocusState private var focused: Bool
+    /// `focused`, readable from the paste monitor (outside body).
+    @State private var isFocused = false
+    @State private var notice: String?
+    @State private var dropTargeted = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -167,7 +194,17 @@ struct CommentComposerView: View {
                 )
                 .accessibilityLabel("Comment")
                 .accessibilityHint("Type @ to mention someone. Command-Return sends.")
+                .accessibilityIdentifier("composer.field")
+                .onChange(of: focused) { _, value in isFocused = value }
+            ComposerAttachmentsView(composer: composer)
+            if let notice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("composer.notice")
+            }
             HStack(spacing: 8) {
+                ComposerAttachMenu(composer: composer) { files in attach(files) }
                 Text("@ to mention · ⌘↩ to send")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -181,8 +218,51 @@ struct CommentComposerView: View {
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(!composer.canSend)
-                .help("Send (⌘↩)")
+                .help(composer.isUploading ? "Wait for the uploads to finish" : "Send (⌘↩)")
+                .accessibilityIdentifier("composer.send")
             }
+        }
+        .onChange(of: composer.attachments.isEmpty) { _, empty in if empty { notice = nil } }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .padding(-4)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(of: AttachmentDrop.types, isTargeted: $dropTargeted) { providers in
+            Task {
+                let dropped = await AttachmentDrop.files(from: providers)
+                attach(dropped.files, skippedFolders: dropped.skipped)
+            }
+            return true
+        }
+        .background {
+            PasteCatcher { _ in
+                guard isFocused, let files = AttachmentPaste.files(from: .general) else { return false }
+                attach(files)
+                return true
+            }
+        }
+        .onAppear { ComposerPresence.appeared(composer) }
+        .onDisappear { ComposerPresence.disappeared(composer) }
+    }
+
+    /// Adds draft chips; past 20 the rest are left out (a pasted image's temp file goes with them), and the
+    /// composer says so.
+    private func attach(_ files: [AttachmentInputFile], skippedFolders: Int = 0) {
+        var refused = 0
+        for file in files where !composer.attach(fileAt: file.url, fileName: file.name, deletesFile: file.deletesFile) {
+            refused += 1
+            if file.deletesFile { try? FileManager.default.removeItem(at: file.url) }
+        }
+        if refused > 0 {
+            notice = "\(AttachmentFormatting.commentFullMessage) \(refused == 1 ? "1 file was" : "\(refused) files were") left out."
+        } else if skippedFolders > 0 {
+            notice = "Folders can't be attached."
+        } else if !files.isEmpty {
+            notice = nil
         }
     }
 

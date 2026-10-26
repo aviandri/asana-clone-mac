@@ -1,0 +1,131 @@
+import AppKit
+import XCTest
+
+/// Attachment flows (SPEC-MAC §8) against FakeMekariAPI: the seeded files on "Fix login redirect" (a PNG
+/// and a text file by others, a PDF and a LINK by alice), Quick Look, Open With, delete, and ⌘V of an image
+/// into the comment composer. Drag and drop from Finder can't be driven from XCUITest; the drop parsing
+/// is covered in AttachmentAppTests.
+final class AttachmentUITests: XCTestCase {
+    private let fixLogin = "50000000-0000-4000-8000-000000000001"
+    private let png = "a0000000-0000-4000-8000-000000000001"   // login-redirect.png
+    private let pdf = "a0000000-0000-4000-8000-000000000002"   // SSO flow.pdf (alice's)
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+    }
+
+    private func element(_ app: XCUIApplication, _ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any)[identifier].firstMatch
+    }
+
+    private func waitForNonExistence(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    /// Launches against the fake API and opens "Fix login redirect" in the inspector.
+    private func launchIntoTask() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["-UITestFakeAPI", "-ApplePersistenceIgnoreState", "YES"]
+        app.launch()
+        app.activate()
+        let row = element(app, "task.row.\(fixLogin)")
+        XCTAssertTrue(row.waitForExistence(timeout: 20), "My Tasks row missing")
+        row.click()
+        XCTAssertTrue(element(app, "attachments.section").waitForExistence(timeout: 10), "attachments section missing")
+        return app
+    }
+
+    @MainActor
+    func testSeededAttachmentsShowInTheInspectorAndUnderTheComment() {
+        let app = launchIntoTask()
+        for id in [png, pdf, "a0000000-0000-4000-8000-000000000003", "a0000000-0000-4000-8000-000000000004"] {
+            XCTAssertTrue(element(app, "attachment.tile.\(id)").waitForExistence(timeout: 5), "tile \(id) missing")
+        }
+        // bob's comment carries returnTo.png: it is in the grid and under the comment.
+        let commentImage = app.descendants(matching: .any).matching(identifier: "attachment.tile.a0000000-0000-4000-8000-000000000005")
+        XCTAssertTrue(commentImage.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(commentImage.count, 2, "the comment's image should show in the grid and under the comment")
+    }
+
+    @MainActor
+    func testSpaceOnASelectedFileOpensQuickLook() {
+        let app = launchIntoTask()
+        let tile = element(app, "attachment.tile.\(png)")
+        XCTAssertTrue(tile.waitForExistence(timeout: 5))
+        tile.click()
+        app.typeKey(" ", modifierFlags: [])
+        let panel = app.windows.matching(NSPredicate(format: "title CONTAINS 'login-redirect'")).firstMatch
+        XCTAssertTrue(panel.waitForExistence(timeout: 10), "Quick Look didn't open: \(app.windows.debugDescription)")
+        app.typeKey(" ", modifierFlags: [])
+        XCTAssertTrue(waitForNonExistence(of: panel, timeout: 5), "Space didn't close Quick Look")
+    }
+
+    @MainActor
+    func testOpenWithListsTheDefaultAppAndOther() {
+        let app = launchIntoTask()
+        let tile = element(app, "attachment.tile.\(pdf)")
+        XCTAssertTrue(tile.waitForExistence(timeout: 5))
+        tile.rightClick()
+        let openWith = app.menuItems["Open With"]
+        XCTAssertTrue(openWith.waitForExistence(timeout: 5), "no Open With item")
+        openWith.hover()
+        XCTAssertTrue(app.menuItems["Other…"].waitForExistence(timeout: 5), "Open With has no Other…")
+        let defaults = app.menuItems.matching(NSPredicate(format: "title ENDSWITH ' (default)'"))
+        XCTAssertGreaterThanOrEqual(defaults.count, 1, "no default app for a PDF: \(app.menuItems.debugDescription)")
+        app.typeKey(.escape, modifierFlags: [])
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    @MainActor
+    func testDeletingAnAttachmentAsksFirstThenRemovesIt() {
+        let app = launchIntoTask()
+        let tile = element(app, "attachment.tile.\(pdf)")
+        XCTAssertTrue(tile.waitForExistence(timeout: 5))
+        tile.rightClick()
+        let delete = app.menuItems["Delete…"]
+        XCTAssertTrue(delete.waitForExistence(timeout: 5), "alice uploaded the PDF, so she can delete it")
+        delete.click()
+        let confirm = app.buttons["Delete"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "no confirmation")
+        confirm.click()
+        XCTAssertTrue(waitForNonExistence(of: tile, timeout: 5), "the PDF is still there")
+    }
+
+    @MainActor
+    func testOthersFilesHaveNoDeleteForAnEditor() {
+        let app = launchIntoTask()
+        let tile = element(app, "attachment.tile.\(png)")
+        XCTAssertTrue(tile.waitForExistence(timeout: 5))
+        tile.rightClick()
+        XCTAssertTrue(app.menuItems["Quick Look"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.menuItems["Delete…"].exists, "admin's PNG isn't alice's to delete")
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    @MainActor
+    func testPastingAnImageIntoTheComposerAddsAChipThatPostsWithTheComment() {
+        let app = launchIntoTask()
+        let field = element(app, "composer.field")
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+
+        let image = NSImage(size: NSSize(width: 8, height: 8))
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: 8, height: 8).fill()
+        image.unlockFocus()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([image]))
+
+        field.click()
+        app.typeKey("v", modifierFlags: .command)
+        let chip = element(app, "composer.chip")
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), "no chip after ⌘V")
+        let send = element(app, "composer.send")
+        let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: send)
+        XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: 10), .completed, "Comment stayed disabled after the upload")
+        send.click()
+        XCTAssertTrue(waitForNonExistence(of: chip, timeout: 10), "the chip didn't go with the comment")
+    }
+}
