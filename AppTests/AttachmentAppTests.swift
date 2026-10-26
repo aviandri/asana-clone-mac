@@ -114,6 +114,7 @@ final class AttachmentAppTests: XCTestCase {
         XCTAssertEqual(AttachmentActions.uniqueURL(for: "README", in: dir).lastPathComponent, "README 2")
     }
 
+    #if canImport(Darwin)
     /// The quarantine xattr's value, nil when absent.
     private func quarantine(_ url: URL) -> String? {
         let size = getxattr(url.path, "com.apple.quarantine", nil, 0, 0, 0)
@@ -150,6 +151,7 @@ final class AttachmentAppTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: existing), Data("pdf".utf8))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix(".") }, [], "staged copy left behind")
     }
+    #endif
 
     // MARK: Paste and drop
 
