@@ -500,6 +500,46 @@ final class AttachmentStoreTests: XCTestCase {
   }
 
   @MainActor
+  func testASweptDraftDoesntCountAsLandedSoTheTextIsPosted() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("swept.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    composer.draft = "Really sent?"
+    await fake.failNext(.addComment, with: .transport()) // the send really failed
+    await composer.send()
+    try await fake.deleteAttachment(draftID)              // later the draft is swept (or deleted elsewhere)
+    await composer.send()                                 // the user tries again with the same text
+    XCTAssertEqual(composer.draft, "", "sent this time")
+    XCTAssertEqual(composer.attachments, [], "the gone chip left")
+    guard case .comment(let comment)? = store.stories.last else { return XCTFail("no comment") }
+    XCTAssertEqual(comment.body, "Really sent?", "a 404 isn't 'landed': the text is posted, not dropped")
+  }
+
+  @MainActor
+  func testACancelledSendLeavesItsChipsUncertain() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("cancelled.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    _ = try await fake.addCommentDirectly(taskID: DemoIDs.taskWithAttachments, attachmentIDs: [draftID]) // the BE commits
+    sending.cancel()                                     // and the caller goes away before the answer
+    await fake.release(.addComment, all: true)
+    await sending.value
+    XCTAssertTrue(composer.sendingIDs.isEmpty)
+    await composer.discard()
+    let kept = await fake.currentAttachments().filter { $0.id == draftID }
+    XCTAssertEqual(kept.count, 1, "a cancelled send is no rejection: what landed is never deleted")
+  }
+
+  @MainActor
   func testALostAnswerThatDidntLandStillDeletesOnRemoveAndDiscard() async throws {
     let fake = demoFake()
     let (_, store) = await openTask(fake)
