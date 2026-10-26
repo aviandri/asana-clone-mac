@@ -128,7 +128,7 @@ struct AttachmentActions {
     }
 
     /// "name.ext", else "name 2.ext", "name 3.ext"… (Safari's style).
-    static func uniqueURL(for name: String, in directory: URL, fileManager: FileManager = .default) -> URL {
+    nonisolated static func uniqueURL(for name: String, in directory: URL, fileManager: FileManager = .default) -> URL {
         let first = directory.appendingPathComponent(name)
         guard fileManager.fileExists(atPath: first.path) else { return first }
         let base = (name as NSString).deletingPathExtension

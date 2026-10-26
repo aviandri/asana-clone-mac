@@ -11,9 +11,11 @@ struct AttachmentInputFile: Equatable {
     var deletesFile = false
 }
 
-/// Files dropped from Finder (or any app that drags file URLs). Folders are left out (`skipped`).
+/// Files dropped from Finder (or any app that drags file URLs). Folders are left out (`skipped`). Main
+/// actor: the providers come from a SwiftUI drop and stay there.
+@MainActor
 enum AttachmentDrop {
-    static let types: [UTType] = [.fileURL]
+    nonisolated static let types: [UTType] = [.fileURL]
 
     static func files(from providers: [NSItemProvider]) async -> (files: [AttachmentInputFile], skipped: Int) {
         var urls: [URL] = []
@@ -26,14 +28,15 @@ enum AttachmentDrop {
 
     private static func fileURL(from provider: NSItemProvider) async -> URL? {
         await withCheckedContinuation { continuation in
-            _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+            // @Sendable: the provider calls back on its own queue, so the closure mustn't be main-actor.
+            _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { @Sendable data, _ in
                 let url = data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
                 continuation.resume(returning: url?.isFileURL == true ? url : nil)
             }
         }
     }
 
-    static func isDirectory(_ url: URL) -> Bool {
+    nonisolated static func isDirectory(_ url: URL) -> Bool {
         (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 }

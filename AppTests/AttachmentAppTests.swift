@@ -176,6 +176,7 @@ final class AttachmentAppTests: XCTestCase {
         XCTAssertEqual(AttachmentPaste.stamp(date), "2026-10-26 at 09.05.03")
     }
 
+    @MainActor
     func testDroppedFoldersAreLeftOut() async throws {
         let dir = try temporaryDirectory()
         let notes = dir.appendingPathComponent("notes.txt")
