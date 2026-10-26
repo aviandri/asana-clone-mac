@@ -56,7 +56,6 @@ final class AttachmentCacheTests: XCTestCase {
     let url = try await cache().file(for: pdf, using: fake)
     let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
     XCTAssertEqual(mode, 0o444, "apps that open it can't save into the cache")
-    XCTAssertFalse(FileManager.default.isWritableFile(atPath: url.path))
 
     // A changed ETag (here: a tampered index) means a re-download, which must replace the read-only copy.
     let indexURL = directory.appendingPathComponent("index.json")
@@ -93,12 +92,18 @@ final class AttachmentCacheTests: XCTestCase {
   func testTheQuarantineIsAppliedBeforeTheFileTurnsReadOnly() async throws {
     let modes = MarkedFiles()
     let cache = AttachmentCache(directory: directory, quarantine: { url in
-      // Record whether the file was still writable when it was quarantined (setxattr needs that on macOS).
-      if FileManager.default.isWritableFile(atPath: url.path) { modes.add(url) }
+      // Record whether the owner could still write the file when it was quarantined (setxattr needs that on macOS).
+      // Mode bits, not isWritableFile: CI's Linux containers run as root, which may write anything.
+      if (AttachmentCacheTests.mode(of: url) ?? 0) & 0o200 != 0 { modes.add(url) }
     })
     let url = try await cache.file(for: try await seeded(DemoIDs.attachmentPDF), using: fake)
     XCTAssertEqual(modes.files.count, 1, "quarantined while still writable")
-    XCTAssertFalse(FileManager.default.isWritableFile(atPath: url.path), "then made read-only")
+    XCTAssertEqual(AttachmentCacheTests.mode(of: url), 0o444, "then made read-only")
+  }
+
+  static func mode(of url: URL) -> Int? {
+    let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+    return (attributes?[.posixPermissions] as? NSNumber)?.intValue
   }
 
   #if canImport(Darwin)
