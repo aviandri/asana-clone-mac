@@ -37,7 +37,10 @@ final class AttachmentCacheTests: XCTestCase {
     let url = try await cache.file(for: pdf, using: fake)
     XCTAssertEqual(url, directory.appendingPathComponent(DemoIDs.attachmentPDF).appendingPathComponent("SSO flow.pdf"))
     XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-    XCTAssertEqual(marked.files, [url])
+    // Quarantined as the temp file next to it, before the move and the chmod (the xattr moves with the file).
+    XCTAssertEqual(marked.files.count, 1)
+    XCTAssertEqual(marked.files.first?.deletingLastPathComponent(), url.deletingLastPathComponent())
+    XCTAssertEqual(marked.files.first?.pathExtension, "part")
     let cachedURL = await cache.cachedFile(for: pdf.id)
     XCTAssertEqual(cachedURL, url)
 
@@ -71,6 +74,45 @@ final class AttachmentCacheTests: XCTestCase {
     await reopened.wipe()
     XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), "read-only files don't stop a wipe")
   }
+
+  func testAFileThatCantBeQuarantinedIsNeverServed() async throws {
+    let pdf = try await seeded(DemoIDs.attachmentPDF)
+    let refusing = AttachmentCache(directory: directory, quarantine: { _ in throw CocoaError(.fileWriteNoPermission) })
+    do {
+      _ = try await refusing.file(for: pdf, using: fake)
+      XCTFail("expected a failure")
+    } catch let error as APIError {
+      XCTAssertEqual(error.message, "Couldn't save the file")
+    }
+    let cached = await refusing.cachedFile(for: pdf.id)
+    XCTAssertNil(cached)
+    let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent(pdf.id).path)) ?? []
+    XCTAssertEqual(leftovers, [], "no unquarantined copy or .part stays")
+  }
+
+  func testTheQuarantineIsAppliedBeforeTheFileTurnsReadOnly() async throws {
+    let modes = MarkedFiles()
+    let cache = AttachmentCache(directory: directory, quarantine: { url in
+      // Record whether the file was still writable when it was quarantined (setxattr needs that on macOS).
+      if FileManager.default.isWritableFile(atPath: url.path) { modes.add(url) }
+    })
+    let url = try await cache.file(for: try await seeded(DemoIDs.attachmentPDF), using: fake)
+    XCTAssertEqual(modes.files.count, 1, "quarantined while still writable")
+    XCTAssertFalse(FileManager.default.isWritableFile(atPath: url.path), "then made read-only")
+  }
+
+  #if canImport(Darwin)
+  /// The real xattr on the final 0444 file (runs in the macOS CI jobs; Quarantine is a no-op on Linux).
+  func testTheRealQuarantineXattrIsOnTheReadOnlyFile() async throws {
+    let cache = AttachmentCache(directory: directory) // the default: Quarantine.mark
+    let url = try await cache.file(for: try await seeded(DemoIDs.attachmentPDF), using: fake)
+    let mode = (try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue
+    XCTAssertEqual(mode, 0o444)
+    let value = try XCTUnwrap(Quarantine.value(of: url), "com.apple.quarantine is missing")
+    XCTAssertTrue(value.hasPrefix("0081;"), value)
+    XCTAssertTrue(value.contains(";Mekari Project;"), value)
+  }
+  #endif
 
   func testOfflineServesTheCachedCopyButNotNothing() async throws {
     let cache = cache()
