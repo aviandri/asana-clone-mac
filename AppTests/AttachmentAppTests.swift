@@ -114,6 +114,43 @@ final class AttachmentAppTests: XCTestCase {
         XCTAssertEqual(AttachmentActions.uniqueURL(for: "README", in: dir).lastPathComponent, "README 2")
     }
 
+    /// The quarantine xattr's value, nil when absent.
+    private func quarantine(_ url: URL) -> String? {
+        let size = getxattr(url.path, "com.apple.quarantine", nil, 0, 0, 0)
+        guard size > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        _ = getxattr(url.path, "com.apple.quarantine", &buffer, size, 0, 0)
+        return String(decoding: buffer, as: UTF8.self)
+    }
+
+    private func mode(_ url: URL) throws -> Int {
+        try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int)
+    }
+
+    func testSavedCopiesKeepTheQuarantineFlagAndAreWritable() throws {
+        let dir = try temporaryDirectory()
+        // A cached download: quarantined, then read-only (AttachmentCache, mac#40).
+        let cached = dir.appendingPathComponent("cached.pdf")
+        try Data("pdf".utf8).write(to: cached)
+        Quarantine.mark(cached)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: cached.path)
+        let flag = try XCTUnwrap(quarantine(cached), "the test file isn't quarantined")
+
+        let fresh = dir.appendingPathComponent("Saved.pdf")
+        try AttachmentActions.copyOut(cached, to: fresh)
+        XCTAssertEqual(quarantine(fresh), flag, "a new copy lost the quarantine flag")
+        XCTAssertEqual(try mode(fresh), 0o644)
+
+        // Save As over an existing, unquarantined file of the user's.
+        let existing = dir.appendingPathComponent("Existing.pdf")
+        try Data("old".utf8).write(to: existing)
+        try AttachmentActions.copyOut(cached, to: existing)
+        XCTAssertEqual(quarantine(existing), flag, "a replaced copy lost the quarantine flag")
+        XCTAssertEqual(try mode(existing), 0o644)
+        XCTAssertEqual(try Data(contentsOf: existing), Data("pdf".utf8))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix(".") }, [], "staged copy left behind")
+    }
+
     // MARK: Paste and drop
 
     private func scratchPasteboard() -> NSPasteboard {

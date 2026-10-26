@@ -108,18 +108,11 @@ struct AttachmentActions {
         pasteboard.setString(url.absoluteString, forType: .string)
     }
 
-    /// Copies the cached download out (xattrs, so the quarantine flag, come along). Replaces what's there:
-    /// the save panel already asked. The cache's copy is read-only (so apps opening it can't edit what the
-    /// app serves back); the user's own copy is made writable again.
+    /// Copies the cached download out, reporting a failure.
     @discardableResult
     private func copy(_ file: URL, to destination: URL) -> Bool {
         do {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                _ = try FileManager.default.replaceItemAt(destination, withItemAt: Self.stagedCopy(of: file, near: destination))
-            } else {
-                try FileManager.default.copyItem(at: file, to: destination)
-            }
-            try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: destination.path)
+            try Self.copyOut(file, to: destination)
             return true
         } catch {
             NSAlert(error: error).runModal()
@@ -127,10 +120,25 @@ struct AttachmentActions {
         }
     }
 
+    /// The user's own copy of a cached download: xattrs come along (so the quarantine flag does, as with a
+    /// Safari download), and it's made writable (0644) afterwards: the cache's copy is read-only, so apps
+    /// opening it can't edit what the app serves back. Replaces what's at `destination` (the save panel
+    /// already asked), with the new file's metadata only.
+    nonisolated static func copyOut(_ file: URL, to destination: URL, fileManager: FileManager = .default) throws {
+        if fileManager.fileExists(atPath: destination.path) {
+            let staged = try stagedCopy(of: file, near: destination, fileManager: fileManager)
+            _ = try fileManager.replaceItemAt(destination, withItemAt: staged, options: .usingNewMetadataOnly)
+        } else {
+            try fileManager.copyItem(at: file, to: destination)
+        }
+        // chmod after the copy: a mode change doesn't touch xattrs.
+        try fileManager.setAttributes([.posixPermissions: 0o644], ofItemAtPath: destination.path)
+    }
+
     /// A copy next to the destination, for an atomic replace that leaves the cached file alone.
-    private static func stagedCopy(of file: URL, near destination: URL) throws -> URL {
+    private nonisolated static func stagedCopy(of file: URL, near destination: URL, fileManager: FileManager) throws -> URL {
         let staged = destination.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString)-\(destination.lastPathComponent)")
-        try FileManager.default.copyItem(at: file, to: staged)
+        try fileManager.copyItem(at: file, to: staged)
         return staged
     }
 
