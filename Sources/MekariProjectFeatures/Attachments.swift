@@ -90,8 +90,25 @@ final class UploadSlots {
   private var running = 0
   private var waiting: [(id: UUID, continuation: CheckedContinuation<Void, Error>)] = []
 
+  /// How long a 429 waits before its one automatic retry (the server frees a cancelled upload's slot a little after
+  /// we do). Tests set it to zero.
+  var rateLimitRetryDelay: Duration = .milliseconds(1500)
+
   init(limit: Int = AttachmentLimits.maxConcurrentUploads) {
     self.limit = limit
+  }
+
+  /// Runs `body` holding a slot (uploads, links and preview refreshes all count on the server, A12), retrying a
+  /// 429 once after `rateLimitRetryDelay`.
+  func run<T: Sendable>(_ body: @MainActor () async throws -> T) async throws -> T {
+    try await acquire()
+    defer { release() }
+    do {
+      return try await body()
+    } catch let error as APIError where error.code == .rateLimited {
+      try await Task.sleep(for: rateLimitRetryDelay)
+      return try await body()
+    }
   }
 
   /// Waits for a slot. Throws `CancellationError` if the calling task is cancelled while waiting.
@@ -146,19 +163,18 @@ final class UploadRunner {
     tasks[id] = Task { [slots] in
       defer { if !Task.isCancelled { self.tasks[id] = nil } }
       do {
-        let attachment: Attachment
-        switch upload.source {
-        case .file(let url, let name):
-          try await slots.acquire()
-          defer { slots.release() }
-          update(id, .uploading(TransferProgress(completed: 0, total: upload.size)))
-          attachment = try await api.uploadAttachment(taskID: upload.taskID, file: url, fileName: name, draft: draft) { progress in
-            let sentAll = progress.total.map { progress.completed >= $0 } ?? false
-            Task { @MainActor in update(id, sentAll ? .finishing : .uploading(progress)) }
+        let attachment: Attachment = try await slots.run {
+          switch upload.source {
+          case .file(let url, let name):
+            update(id, .uploading(TransferProgress(completed: 0, total: upload.size)))
+            return try await api.uploadAttachment(taskID: upload.taskID, file: url, fileName: name, draft: draft) { progress in
+              let sentAll = progress.total.map { progress.completed >= $0 } ?? false
+              Task { @MainActor in update(id, sentAll ? .finishing : .uploading(progress)) }
+            }
+          case .link(let url, let title):
+            update(id, .uploading(TransferProgress(completed: 0, total: nil)))
+            return try await api.addLink(taskID: upload.taskID, url: url, title: title, draft: draft)
           }
-        case .link(let url, let title):
-          update(id, .uploading(TransferProgress(completed: 0, total: nil)))
-          attachment = try await api.addLink(taskID: upload.taskID, url: url, title: title, draft: draft)
         }
         guard !Task.isCancelled else { return }
         update(id, .finished(attachment))
@@ -237,7 +253,9 @@ public final class AttachmentUploads {
     let name = fileName ?? url.lastPathComponent
     switch preflight(url) {
     case .failure(let error):
-      all.append(AttachmentUpload(taskID: taskID, source: .file(url, name: name), state: .failed(error), deletesFile: deletesFile))
+      let upload = AttachmentUpload(taskID: taskID, source: .file(url, name: name), state: .failed(error), deletesFile: deletesFile)
+      all.append(upload)
+      workspaces[upload.id] = workspaceID
     case .success(let size):
       let upload = AttachmentUpload(taskID: taskID, source: .file(url, name: name), size: size, deletesFile: deletesFile)
       all.append(upload)

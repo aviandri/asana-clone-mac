@@ -19,6 +19,8 @@ import Foundation
 ///   collection endpoint with the header set emits `.workspaceLost`.
 public actor LiveMekariAPI: MekariAPI {
   public static let workspaceHeader = "X-Workspace-Id"
+  /// Idle timeout for uploads and downloads (other requests keep the transport's 30 s).
+  public static let transferTimeout: TimeInterval = 300
 
   public nonisolated let events: AsyncStream<APIEvent>
   private nonisolated let eventSink: AsyncStream<APIEvent>.Continuation
@@ -205,14 +207,18 @@ public actor LiveMekariAPI: MekariAPI {
     guard size <= AttachmentLimits.maxUploadBytes else { throw AttachmentLimits.tooLarge() }
     try Task.checkCancellation()
     let name = fileName ?? file.lastPathComponent
-    // Built off the actor: copying up to 100 MB must not hold up other requests.
-    let body = try await Task.detached { try Multipart.writeTempFile(copying: file, fileName: name) }.value
+    // Built off the actor (copying up to 100 MB must not hold up other requests), and cancelled with the caller.
+    let copying = Task.detached { try Multipart.writeTempFile(copying: file, fileName: name) }
+    let body = try await withTaskCancellationHandler { try await copying.value } onCancel: { copying.cancel() }
     defer { try? FileManager.default.removeItem(at: body.url) }
     let path = "/tasks/\(taskID)/attachments"
     var prepared = prepare(.post, url: url(path, query: ["draft": draft ? "true" : nil]), path: path)
     prepared.request.setValue("application/json", forHTTPHeaderField: "Accept")
     prepared.request.setValue("multipart/form-data; boundary=\(body.boundary)", forHTTPHeaderField: "Content-Type")
     prepared.request.setValue(String(body.length), forHTTPHeaderField: "Content-Length")
+    // The server may sit quiet for a while after the last byte (storing, thumbnails): don't time out and retry
+    // into a duplicate.
+    prepared.request.timeoutInterval = LiveMekariAPI.transferTimeout
     let overhead = body.headerLength
     let (data, response) = try await perform { [transport, request = prepared.request] in
       try await transport.upload(request, fromFile: body.url) { sent, _ in
@@ -243,6 +249,7 @@ public actor LiveMekariAPI: MekariAPI {
   public func download(_ path: String, to destination: URL, ifNoneMatch etag: String?,
                        progress: @escaping @Sendable (TransferProgress) -> Void) async throws -> DownloadOutcome {
     var prepared = try prepareBytes(path)
+    prepared.request.timeoutInterval = LiveMekariAPI.transferTimeout
     if let etag { prepared.request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
     let (data, response) = try await perform { [transport, request = prepared.request] in
       try await transport.download(request, to: destination) { received, expected in

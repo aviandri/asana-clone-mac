@@ -113,6 +113,13 @@ final class AttachmentModelTests: XCTestCase {
     XCTAssertEqual(code("INSUFFICIENT_STORAGE", 507), .insufficientStorage)
     XCTAssertEqual(code("RATE_LIMITED", 429), .rateLimited)
     XCTAssertEqual(code("QUOTA_SOMETHING_NEW", 409), .unknown("QUOTA_SOMETHING_NEW"))
+    func htmlCode(_ status: Int) -> APIError.Code {
+      APIError.from(status: status, body: Data("<html><body>nginx</body></html>".utf8)).code
+    }
+    XCTAssertEqual(htmlCode(413), .payloadTooLarge, "a proxy's HTML 413")
+    XCTAssertEqual(htmlCode(429), .rateLimited)
+    XCTAssertEqual(htmlCode(507), .insufficientStorage)
+    XCTAssertEqual(htmlCode(502), .unknown("HTTP 502"))
     let local = AttachmentLimits.tooLarge()
     XCTAssertEqual(local.code, .payloadTooLarge)
     XCTAssertNil(local.status)
@@ -200,6 +207,7 @@ final class AttachmentLiveAPITests: XCTestCase {
     XCTAssertTrue(body.contains(#"Content-Disposition: form-data; name="file"; filename="Résumé %22final%22.txt""#), body)
     XCTAssertTrue(body.contains("\r\n\r\nhello world\r\n--\(boundary)--\r\n"))
     XCTAssertEqual(progress.values.last, TransferProgress(completed: 11, total: 11))
+    XCTAssertEqual(request.timeoutInterval, 300, "the server may be quiet a while after the last byte")
     XCTAssertEqual(tempFiles().subtracting(before), [], "the temp multipart file is deleted")
   }
 
@@ -290,6 +298,7 @@ final class AttachmentLiveAPITests: XCTestCase {
     let request = try XCTUnwrap(transport.last)
     XCTAssertEqual(request.url?.absoluteString, "https://mp.example.com/api/v1/attachments/att-1/content")
     XCTAssertNil(request.value(forHTTPHeaderField: LiveMekariAPI.workspaceHeader), "byte GETs ignore the workspace")
+    XCTAssertEqual(request.timeoutInterval, 300)
     XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "sid=tok")
 
     transport.enqueue(.init(status: 304, body: ""))

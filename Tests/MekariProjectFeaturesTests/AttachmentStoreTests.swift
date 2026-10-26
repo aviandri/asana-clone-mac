@@ -41,6 +41,7 @@ final class AttachmentStoreTests: XCTestCase {
   @MainActor
   func openTask(_ fake: FakeMekariAPI, _ id: String = DemoIDs.taskWithAttachments) async -> (AppSession, TaskDetailStore) {
     let session = await signedInSession(fake)
+    session.uploadSlots.rateLimitRetryDelay = .zero
     sessions.append(session)
     await stopPolling(session)
     let store = session.scope!.taskDetail(id)
@@ -200,6 +201,90 @@ final class AttachmentStoreTests: XCTestCase {
     XCTAssertFalse(stories.contains { $0.id == Story.comment(posted).id }, "the server dropped it too")
   }
 
+  @MainActor
+  func testA429IsRetriedOnceAutomatically() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    await fake.failNext(.uploadAttachment, with: APIError(code: .rateLimited, status: 429, message: "Slow down"))
+    store.attach(fileAt: try file("retry.txt"))
+    await waitUntil("landed after one retry") { store.attachments.contains { $0.name == "retry.txt" } }
+    let uploadCalls = await calls(fake, .uploadAttachment)
+    XCTAssertEqual(uploadCalls, 2)
+    await fake.failNext(.uploadAttachment, with: APIError(code: .rateLimited, status: 429, message: "Slow down"), times: 2)
+    store.attach(fileAt: try file("twice.txt"))
+    await waitUntil("failed after the retry") { store.uploads.first?.isFailed == true }
+    guard case .failed(let error)? = store.uploads.first?.state else { return XCTFail() }
+    XCTAssertEqual(error.code, .rateLimited)
+  }
+
+  @MainActor
+  func testLinksAndRefreshesWaitForAnUploadSlot() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    await fake.hold(.uploadAttachment)
+    for i in 0..<3 { store.attach(fileAt: try file("u\(i).txt")) }
+    await waitUntil("three parked") { await fake.parkedCount(.uploadAttachment) == 3 }
+    let linking = Task { try await store.addLink("https://example.com/spec", title: nil) }
+    await settle()
+    let linkCalls = await calls(fake, .addLink)
+    XCTAssertEqual(linkCalls, 0, "the BE counts links in the 3 (A12)")
+    await fake.release(.uploadAttachment)
+    try await linking.value
+    let after = await calls(fake, .addLink)
+    XCTAssertEqual(after, 1)
+    await fake.release(.uploadAttachment, all: true)
+  }
+
+  @MainActor
+  func testDeletingACommentDropsItsAttachmentsFromTheTask() async {
+    // bob's comment carries the seeded image; an admin may delete any comment.
+    let adminSession = await signedInSession(FakeMekariAPI(seed: .demo(today: TestTime.today), signedInAs: "admin@example.com"))
+    sessions.append(adminSession)
+    let store = adminSession.scope!.taskDetail(DemoIDs.taskWithAttachments)
+    await store.load()
+    let commentID = store.attachments.first { $0.id == DemoIDs.attachmentCommentImage }!.commentId!
+    await store.deleteComment(commentID)
+    XCTAssertFalse(store.attachments.contains { $0.id == DemoIDs.attachmentCommentImage })
+    XCTAssertEqual(store.task?.attachmentCount, 4)
+  }
+
+  @MainActor
+  func testAnEmptyEditKeepsACommentThatHasAttachments() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    store.composer.draft = "with a file"
+    store.composer.attach(fileAt: try file("f.txt"))
+    await waitUntil("uploaded") { store.composer.attachments.first?.isFinished == true }
+    await store.composer.send()
+    guard case .comment(let comment)? = store.stories.last else { return XCTFail() }
+    await store.editComment(comment.id, body: "  ")
+    guard case .comment(let edited)? = store.stories.last else { return XCTFail() }
+    XCTAssertEqual(edited.body, "", "A9: the body may go empty when there are attachments")
+    XCTAssertNil(store.lastError)
+  }
+
+  @MainActor
+  func testAFailedPreCheckIsDroppedWithItsWorkspace() async throws {
+    let fake = demoFake()
+    let (session, store) = await openTask(fake)
+    store.attach(fileAt: try sparse(AttachmentLimits.maxUploadBytes + 1))
+    XCTAssertEqual(session.uploads.all.count, 1)
+    session.uploads.cancel(workspaceID: DemoIDs.mekari)
+    XCTAssertEqual(session.uploads.all, [])
+  }
+
+  @MainActor
+  func testStartingSignedOutWipesTheCache() async throws {
+    let cache = AttachmentCache.scratch()
+    let directory = await cache.directory
+    try FileManager.default.createDirectory(at: directory.appendingPathComponent("leftover"), withIntermediateDirectories: true)
+    let session = AppSession(settings: InMemoryServerSettings(), tokens: InMemoryTokenStore(), apiFactory: { _, _ in demoFake() },
+                             attachmentCache: cache)
+    await session.start()
+    XCTAssertEqual(session.state, .signedOut)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+  }
+
   // MARK: - Composer
 
   @MainActor
@@ -264,6 +349,66 @@ final class AttachmentStoreTests: XCTestCase {
     XCTAssertEqual(composer.attachments, [])
     let left = await fake.currentAttachments().filter { ids.contains($0.id) }
     XCTAssertEqual(left, [])
+  }
+
+  @MainActor
+  func testDiscardDuringASendLeavesThePostedDraftsAlone() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("posted.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    await composer.discard()                          // the task window closes mid-send
+    let deletes = await calls(fake, .deleteAttachment)
+    XCTAssertEqual(deletes, 0, "a chip being posted isn't deleted")
+    await fake.release(.addComment, all: true)
+    await sending.value
+    guard case .comment(let comment)? = store.stories.last else { return XCTFail("no comment") }
+    XCTAssertEqual(comment.attachments.map(\.id), [draftID], "the comment kept its attachment")
+  }
+
+  @MainActor
+  func testDiscardDuringAFailedSendDeletesTheDraftsAfterwards() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("lost.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    await composer.discard()
+    await fake.failNext(.addComment, with: .transport())
+    await fake.release(.addComment, all: true)
+    await sending.value
+    let left = await fake.currentAttachments().filter { $0.id == draftID }
+    XCTAssertEqual(left, [], "the send failed, so the discarded draft is deleted")
+  }
+
+  @MainActor
+  func testAFailedSendThatTheServerCommittedKeepsItsAttachments() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("kept.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    await composer.discard()
+    // The server took the comment, but the answer never arrived (a dropped connection).
+    _ = try await fake.addCommentDirectly(taskID: DemoIDs.taskWithAttachments, attachmentIDs: [draftID])
+    await fake.failNext(.addComment, with: .transport())
+    await fake.release(.addComment, all: true)
+    await sending.value
+    let kept = await fake.currentAttachments().filter { $0.id == draftID }
+    XCTAssertEqual(kept.count, 1, "a transport failure isn't a rejection: the posted attachment stays")
   }
 
   @MainActor
