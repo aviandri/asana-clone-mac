@@ -99,13 +99,14 @@ final class UploadSlots {
   }
 
   /// Runs `body` holding a slot (uploads, links and preview refreshes all count on the server, A12), retrying a
-  /// 429 once after `rateLimitRetryDelay`.
-  func run<T: Sendable>(_ body: @MainActor () async throws -> T) async throws -> T {
+  /// 429 once after `rateLimitRetryDelay`, but only while `mayRetry()` (an upload whose body was fully sent isn't
+  /// re-sent: that 429 is the server's draft quota, and the chip already shows "Finishing…").
+  func run<T: Sendable>(mayRetry: @MainActor () -> Bool = { true }, _ body: @MainActor () async throws -> T) async throws -> T {
     try await acquire()
     defer { release() }
     do {
       return try await body()
-    } catch let error as APIError where error.code == .rateLimited {
+    } catch let error as APIError where error.code == .rateLimited && mayRetry() {
       try await Task.sleep(for: rateLimitRetryDelay)
       return try await body()
     }
@@ -163,12 +164,14 @@ final class UploadRunner {
     tasks[id] = Task { [slots] in
       defer { if !Task.isCancelled { self.tasks[id] = nil } }
       do {
-        let attachment: Attachment = try await slots.run {
+        let bodySent = SentFlag()
+        let attachment: Attachment = try await slots.run(mayRetry: { !bodySent.value }) {
           switch upload.source {
           case .file(let url, let name):
             update(id, .uploading(TransferProgress(completed: 0, total: upload.size)))
             return try await api.uploadAttachment(taskID: upload.taskID, file: url, fileName: name, draft: draft) { progress in
               let sentAll = progress.total.map { progress.completed >= $0 } ?? false
+              if sentAll { bodySent.set() }
               Task { @MainActor in update(id, sentAll ? .finishing : .uploading(progress)) }
             }
           case .link(let url, let title):
@@ -200,6 +203,14 @@ final class UploadRunner {
   }
 
   var runningIDs: Set<UUID> { Set(tasks.keys) }
+}
+
+/// Set (from any thread) once an upload's whole body was sent.
+final class SentFlag: @unchecked Sendable {
+  private let lock = NSLock()
+  private var sent = false
+  func set() { lock.lock(); sent = true; lock.unlock() }
+  var value: Bool { lock.lock(); defer { lock.unlock() }; return sent }
 }
 
 /// Checks a file before any request: readable, not a folder, at most 100 MB. Returns its size or the error.

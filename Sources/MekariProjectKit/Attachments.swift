@@ -284,8 +284,13 @@ public enum AttachmentLinks {
       !(scalar.properties.generalCategory == .control || scalar.properties.generalCategory == .format
         || scalar == "/" || scalar == "\\" || scalar == ":")
     }))
-    cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-    while cleaned.hasPrefix(".") { cleaned.removeFirst() }
+    // Trim and drop leading dots until stable, so the result is a fixed point (". a" → "a", not " a").
+    var previous: String
+    repeat {
+      previous = cleaned
+      cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+      while cleaned.hasPrefix(".") { cleaned.removeFirst() }
+    } while cleaned != previous
     if cleaned.isEmpty { return "file" }
     guard cleaned.utf8.count > 200 else { return cleaned }
     let ext = (cleaned as NSString).pathExtension

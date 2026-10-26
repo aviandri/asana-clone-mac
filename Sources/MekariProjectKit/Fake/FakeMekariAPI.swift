@@ -479,6 +479,13 @@ public actor FakeMekariAPI: MekariAPI {
     0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
   ])
   private var blobs: [String: Data] = [:]
+  private var afterBodyFailures: [APIError] = []
+
+  /// The next upload receives its whole body (progress reaches the total), then fails with `error`: the BE's
+  /// second draft-quota check (429), or a proxy error after the upload.
+  public func failNextUploadAfterBody(with error: APIError) {
+    afterBodyFailures.append(error)
+  }
 
   /// Every attachment in the fake (drafts included), for assertions.
   public func currentAttachments() -> [Attachment] { db.attachments }
@@ -507,6 +514,10 @@ public actor FakeMekariAPI: MekariAPI {
     let (task, _) = try visibleTask(taskID)
     if !draft { try requireEditTask(task, user: user) }
     progress(TransferProgress(completed: 0, total: size))
+    if !afterBodyFailures.isEmpty {
+      progress(TransferProgress(completed: size, total: size))
+      throw afterBodyFailures.removeFirst()
+    }
     let name = AttachmentLinks.safeFileName(fileName ?? file.lastPathComponent)
     let mime = FakeMekariAPI.mimeType(for: name)
     let id = newID()

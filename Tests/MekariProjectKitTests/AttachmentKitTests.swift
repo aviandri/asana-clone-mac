@@ -134,6 +134,10 @@ final class AttachmentModelTests: XCTestCase {
     }
     XCTAssertEqual(AttachmentLinks.safeFileName("../../etc/passwd"), "etcpasswd")
     XCTAssertEqual(AttachmentLinks.safeFileName("   "), "file")
+    for name in [". a", " .. b.txt", ".\u{202E} c", "x", String(repeating: "é", count: 300) + ".pdf", " . . d "] {
+      let once = AttachmentLinks.safeFileName(name)
+      XCTAssertEqual(AttachmentLinks.safeFileName(once), once, "idempotent for \(name.debugDescription)")
+    }
     XCTAssertEqual(AttachmentLinks.safeFileName("a\u{202E}gpj.exe"), "agpj.exe", "bidi controls are dropped")
     XCTAssertEqual(AttachmentLinks.safeFileName("Résumé 2026.pdf"), "Résumé 2026.pdf")
     let long = AttachmentLinks.safeFileName(String(repeating: "é", count: 300) + ".pdf")
