@@ -95,48 +95,55 @@ public final class TaskDetailStore {
   }
 
   /// Starts a task-level upload (it carries on if the task is closed). Over 100 MB fails at once, without a request.
-  public func attach(fileAt url: URL, fileName: String? = nil) {
-    uploadStore.start(taskID: taskID, workspaceID: task?.workspaceId ?? workspaceID, file: url, fileName: fileName)
+  /// `deletesFile`: the file is a temp file of ours (a pasted image); it is deleted once the upload leaves the list.
+  public func attach(fileAt url: URL, fileName: String? = nil, deletesFile: Bool = false) {
+    uploadStore.start(taskID: taskID, workspaceID: task?.workspaceId ?? workspaceID, file: url, fileName: fileName,
+                      deletesFile: deletesFile)
   }
 
-  /// Adds a task-level link. A URL that isn't absolute http(s) is refused locally (`lastError`).
-  public func addLink(_ url: String, title: String?) async {
-    switch validateLink(url) {
-    case .failure(let error):
-      lastError = error
-    case .success(let link):
-      do {
-        attachmentAdded(try await api.addLink(taskID: taskID, url: link, title: title, draft: false))
-      } catch {
-        recordFailure(error, lastError: &lastError)
-      }
+  /// Adds a task-level link. Throws the `APIError` for the popover (`.validation` with an issue on `url` for a
+  /// URL that isn't absolute http(s), checked locally first; the server's otherwise). `CancellationError` passes through.
+  public func addLink(_ url: String, title: String?) async throws {
+    let link = try validateLink(url).get()
+    do {
+      attachmentAdded(try await api.addLink(taskID: taskID, url: link, title: title, draft: false))
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch {
+      throw error.asAPIError
     }
   }
 
   public func retryUpload(_ id: UUID) { uploadStore.retry(id) }
 
-  /// Cancels a queued or running upload, or dismisses a failed one.
-  public func cancelUpload(_ id: UUID) { uploadStore.cancel(id) }
+  /// Cancels a queued or uploading upload, or dismisses a failed one. False (nothing happens) while it is finishing.
+  @discardableResult
+  public func cancelUpload(_ id: UUID) -> Bool { uploadStore.cancel(id) }
 
-  /// Deletes an attachment. A comment one also leaves its comment, and an empty-body comment whose last
-  /// attachment this was is removed (the server deletes it too).
+  /// Deletes an attachment, optimistically: it leaves the list (and its comment, and an empty-body comment whose
+  /// last attachment it was, as the server does) at once, and comes back with `lastError` if the server refuses.
   public func deleteAttachment(_ id: String) async {
     let attachment = attachments.first { $0.id == id } ?? commentAttachment(id)
+    let removedComment = attachment?.commentId.flatMap(comment(_:))
+    let wasInList = attachments.contains { $0.id == id }
+    tasks.editAttachments(taskID) { $0.removeAll { $0.id == id } }
+    if let commentID = attachment?.commentId {
+      stories = stories.compactMap { story in
+        guard case .comment(var comment) = story, comment.id == commentID else { return story }
+        comment.attachments.removeAll { $0.id == id }
+        if comment.attachments.isEmpty && comment.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
+        return .comment(comment)
+      }
+    }
     do {
       try await api.deleteAttachment(id)
     } catch let error as APIError where error.code == .notFound {
-      // Already gone: drop it locally too.
+      // Already gone: stays gone.
     } catch {
+      // Put it back where it was.
+      if let attachment, wasInList { tasks.editAttachments(taskID) { list in list.append(attachment) } }
+      if let removedComment { restore(removedComment) }
       recordFailure(error, lastError: &lastError)
-      return
-    }
-    tasks.editAttachments(taskID) { $0.removeAll { $0.id == id } }
-    guard let commentID = attachment?.commentId else { return }
-    stories = stories.compactMap { story in
-      guard case .comment(var comment) = story, comment.id == commentID else { return story }
-      comment.attachments.removeAll { $0.id == id }
-      if comment.attachments.isEmpty && comment.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
-      return .comment(comment)
     }
   }
 
@@ -158,6 +165,23 @@ public final class TaskDetailStore {
     tasks.editAttachments(taskID, bumpedAt: attachment.createdAt) { list in
       list.removeAll { $0.id == attachment.id }
       list.append(attachment)
+    }
+  }
+
+  private func comment(_ id: String) -> Comment? {
+    for story in stories {
+      if case .comment(let comment) = story, comment.id == id { return comment }
+    }
+    return nil
+  }
+
+  /// Puts a comment back as it was (replacing the edited copy, or reinserting it by time).
+  private func restore(_ comment: Comment) {
+    if let i = stories.firstIndex(where: { $0.id == Story.comment(comment).id }) {
+      stories[i] = .comment(comment)
+    } else {
+      let at = stories.firstIndex { $0.createdAt > comment.createdAt } ?? stories.endIndex
+      stories.insert(.comment(comment), at: at)
     }
   }
 
@@ -350,34 +374,43 @@ public final class CommentComposer {
     draft = String(draft[..<at]) + Mentions.token(for: user.user) + " "
   }
 
-  /// Text or at least one finished chip; nothing queued, uploading or failed (retry or remove it first); not sending.
+  /// Text or at least one finished chip, nothing queued/uploading/finishing, not sending. Failed chips don't block
+  /// (a successful send drops them, as on the web).
   public var canSend: Bool {
     let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    let ready = attachments.allSatisfy(\.isFinished)
-    return (hasText || !attachments.isEmpty) && ready && !isSending
+    return (hasText || attachments.contains(where: \.isFinished)) && !isUploading && !isSending
   }
 
-  /// True while a chip is queued or uploading (Send stays disabled).
+  /// True while a chip is queued, uploading or finishing (Send stays disabled).
   public var isUploading: Bool { attachments.contains(where: \.isActive) }
+
+  /// The chips being posted right now: their × is disabled and `remove` refuses them.
+  public private(set) var sendingIDs: Set<UUID> = []
 
   public func send() async {
     guard canSend else { return }
     isSending = true
-    defer { isSending = false }
     let sent = draft
-    let sentChips = attachments.compactMap { chip in chip.attachment.map { (chip.id, $0.id) } }
+    let posted = attachments.compactMap { chip in chip.attachment.map { (chip: chip.id, attachment: $0.id) } }
+    let failedAtSend = Set(attachments.filter(\.isFailed).map(\.id))
+    sendingIDs = Set(posted.map(\.chip))
+    defer {
+      isSending = false
+      sendingIDs = []
+    }
     do {
       let comment = try await api.addComment(taskID: taskID, body: sent.trimmingCharacters(in: .whitespacesAndNewlines),
-                                             attachmentIDs: sentChips.map(\.1))
+                                             attachmentIDs: posted.map(\.attachment))
       // Keep anything typed while sending.
       if draft == sent {
         draft = ""
       } else if draft.hasPrefix(sent) {
         draft = String(draft.dropFirst(sent.count)).trimmingCharacters(in: .whitespaces)
       }
-      // Chips added while sending stay.
-      let sentIDs = Set(sentChips.map(\.0))
-      attachments.removeAll { sentIDs.contains($0.id) }
+      // Only what was posted (and what had failed by then) goes; chips added meanwhile wait for the next comment.
+      let gone = sendingIDs.union(failedAtSend)
+      attachments.filter { gone.contains($0.id) }.forEach { $0.cleanUp() }
+      attachments.removeAll { gone.contains($0.id) }
       lastError = nil
       onSent?(comment)
     } catch {
@@ -387,33 +420,57 @@ public final class CommentComposer {
 
   // MARK: Draft attachments
 
-  /// Uploads a file as a draft (`?draft=true`). Over 100 MB, unreadable, or past 20 chips → refused without a request.
-  public func attach(fileAt url: URL, fileName: String? = nil) {
-    guard roomForAnother() else { return }
+  /// Whether another chip fits (20 per comment; failed chips don't count, links in flight do).
+  public var hasRoomForAnother: Bool {
+    attachments.filter { !$0.isFailed }.count < AttachmentLimits.maxPerComment
+  }
+
+  /// Uploads a file as a draft (`?draft=true`). False when the comment already has 20 attachments (the UI says
+  /// so). Over 100 MB or unreadable → a failed chip at once, without a request. `deletesFile`: a temp file of
+  /// ours (pasted image), deleted once the chip goes.
+  @discardableResult
+  public func attach(fileAt url: URL, fileName: String? = nil, deletesFile: Bool = false) -> Bool {
+    guard hasRoomForAnother else { return false }
     let name = fileName ?? url.lastPathComponent
     switch preflight(url) {
     case .failure(let error):
-      attachments.append(AttachmentUpload(taskID: taskID, source: .file(url, name: name), state: .failed(error)))
+      attachments.append(AttachmentUpload(taskID: taskID, source: .file(url, name: name), state: .failed(error),
+                                          deletesFile: deletesFile))
     case .success(let size):
-      let chip = AttachmentUpload(taskID: taskID, source: .file(url, name: name), size: size)
+      let chip = AttachmentUpload(taskID: taskID, source: .file(url, name: name), size: size, deletesFile: deletesFile)
       attachments.append(chip)
       run(chip)
     }
+    return true
   }
 
-  /// Adds a draft link. A URL that isn't absolute http(s) is refused locally (`lastError`).
-  public func attachLink(_ url: String, title: String?) async {
-    guard roomForAnother() else { return }
-    switch validateLink(url) {
-    case .failure(let error):
-      lastError = error
-    case .success(let link):
-      let chip = AttachmentUpload(taskID: taskID, source: .link(url: link, title: title))
-      attachments.append(chip)
-      run(chip)
+  /// Adds a draft link: the chip shows `.uploading` (no total) while the server fetches the preview. Returns false
+  /// when there's no room (20). Throws the `APIError` for the popover (local http(s) check first, then the
+  /// server's); a failed link leaves no chip.
+  @discardableResult
+  public func attachLink(_ url: String, title: String?) async throws -> Bool {
+    guard hasRoomForAnother else { return false }
+    let link = try validateLink(url).get()
+    let chip = AttachmentUpload(taskID: taskID, source: .link(url: link, title: title),
+                                state: .uploading(TransferProgress(completed: 0, total: nil)))
+    attachments.append(chip)
+    do {
+      let attachment = try await api.addLink(taskID: taskID, url: link, title: title, draft: true)
+      guard let i = attachments.firstIndex(where: { $0.id == chip.id }) else {
+        // Removed (or discarded) while it was being added.
+        try? await api.deleteAttachment(attachment.id)
+        return true
+      }
+      attachments[i].state = .finished(attachment)
+      return true
+    } catch {
+      attachments.removeAll { $0.id == chip.id }
+      if error is CancellationError { throw error }
+      throw error.asAPIError
     }
   }
 
+  /// Retries a failed file chip.
   public func retry(_ id: UUID) {
     guard let i = attachments.firstIndex(where: { $0.id == id }), attachments[i].isFailed else { return }
     if case .file(let url, _) = attachments[i].source, case .failure(let error) = preflight(url) {
@@ -425,39 +482,50 @@ public final class CommentComposer {
   }
 
   /// Removes a chip: cancels its upload, or deletes the uploaded draft (best effort; the server sweeps the rest).
-  public func remove(_ id: UUID) async {
-    guard let i = attachments.firstIndex(where: { $0.id == id }) else { return }
+  /// False (nothing happens) while it is finishing or being posted.
+  @discardableResult
+  public func remove(_ id: UUID) async -> Bool {
+    guard let i = attachments.firstIndex(where: { $0.id == id }), !attachments[i].isFinishing, !sendingIDs.contains(id) else {
+      return false
+    }
     let chip = attachments.remove(at: i)
     runner.cancel(id)
+    chip.cleanUp()
     if let draft = chip.attachment { try? await api.deleteAttachment(draft.id) }
+    return true
   }
 
-  /// Removes every chip (the App calls this when the task is closed). Typed text stays.
+  /// Removes every chip (the App calls this when the task is closed); finishing ones are deleted once they land.
+  /// Typed text stays.
   public func discard() async {
     let chips = attachments
     attachments = []
-    runner.cancelAll()
+    runner.cancelAll(except: Set(chips.filter(\.isFinishing).map(\.id)))
+    discardedWhileFinishing.formUnion(chips.filter(\.isFinishing).map(\.id))
+    chips.forEach { $0.cleanUp() }
     for draft in chips.compactMap(\.attachment) { try? await api.deleteAttachment(draft.id) }
   }
 
   /// Stops uploads without deleting anything (the scope closed; the server sweeps the drafts).
   func cancelUploads() {
     runner.cancelAll()
+    attachments.forEach { $0.cleanUp() }
     attachments = []
   }
 
-  private func roomForAnother() -> Bool {
-    guard attachments.count < AttachmentLimits.maxPerComment else {
-      lastError = APIError(code: .validation, message: "A comment can have up to \(AttachmentLimits.maxPerComment) attachments")
-      return false
-    }
-    return true
-  }
+  /// Finishing chips that were discarded: their draft is deleted when it lands.
+  @ObservationIgnored private var discardedWhileFinishing: Set<UUID> = []
 
   private func run(_ chip: AttachmentUpload) {
     runner.run(chip, draft: true, api: api) { [weak self] id, state in
-      guard let self, let i = self.attachments.firstIndex(where: { $0.id == id }) else { return }
-      if case .uploading = state, !self.attachments[i].isActive { return }
+      guard let self else { return }
+      guard let i = self.attachments.firstIndex(where: { $0.id == id }) else {
+        if self.discardedWhileFinishing.remove(id) != nil, case .finished(let draft) = state {
+          Task { try? await self.api.deleteAttachment(draft.id) }
+        }
+        return
+      }
+      if case .uploading = state, !self.attachments[i].isActive || self.attachments[i].isFinishing { return }
       self.attachments[i].state = state
     }
   }

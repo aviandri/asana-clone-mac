@@ -26,7 +26,7 @@ final class AppFlowContractTests: XCTestCase {
   @MainActor
   func session(_ email: String, in workspace: String = "Mekari") async throws -> (AppSession, WorkspaceScope) {
     let session = AppSession(settings: InMemoryServerSettings(), tokens: InMemoryTokenStore(),
-                             apiFactory: { url, tokens in LiveMekariAPI(baseURL: url, tokens: tokens) })
+                             apiFactory: { url, tokens in LiveMekariAPI(baseURL: url, tokens: tokens) }, attachmentCache: .scratch())
     await session.signIn(server: server.absoluteString, email: email, password: "password123")
     XCTAssertNil(session.signInError)
     let target = try XCTUnwrap(session.all.first { $0.name == workspace }, "\(email) isn't in \(workspace)")

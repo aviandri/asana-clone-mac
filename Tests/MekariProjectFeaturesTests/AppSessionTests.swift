@@ -7,7 +7,7 @@ import XCTest
 final class AppSessionTests: XCTestCase {
   @MainActor
   func testStartWithoutAServerOrSessionIsSignedOut() async {
-    let none = AppSession(settings: InMemoryServerSettings(), tokens: InMemoryTokenStore(), apiFactory: { _, _ in demoFake() })
+    let none = AppSession(settings: InMemoryServerSettings(), tokens: InMemoryTokenStore(), apiFactory: { _, _ in demoFake() }, attachmentCache: .scratch())
     XCTAssertEqual(none.state, .restoring)
     await none.start()
     XCTAssertEqual(none.state, .signedOut)
@@ -54,7 +54,7 @@ final class AppSessionTests: XCTestCase {
   @MainActor
   func testSignInMapsRateLimitingAndOfflineServers() async {
     let fake = demoFake(as: nil)
-    let session = AppSession(settings: InMemoryServerSettings(), tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake })
+    let session = AppSession(settings: InMemoryServerSettings(), tokens: InMemoryTokenStore(), apiFactory: { _, _ in fake }, attachmentCache: .scratch())
     await fake.failNext(.login, with: APIError(code: .rateLimited, status: 429, message: "Slow down"))
     await session.signIn(server: "mp.example.com", email: "alice@example.com", password: DemoIDs.password)
     XCTAssertEqual(session.signInError, .rateLimited)

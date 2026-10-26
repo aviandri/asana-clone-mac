@@ -13,6 +13,9 @@ public struct AttachmentUpload: Identifiable, Sendable, Hashable {
     /// Waiting for one of the `AttachmentLimits.maxConcurrentUploads` slots.
     case queued
     case uploading(TransferProgress)
+    /// The whole body is sent and the server is storing it: it lands even if cancelled now, so cancel and
+    /// remove are refused (web shows "Finishing…").
+    case finishing
     /// Composer chips only; finished task-level uploads leave the list.
     case finished(Attachment)
     /// Retry or remove.
@@ -25,13 +28,22 @@ public struct AttachmentUpload: Identifiable, Sendable, Hashable {
   public internal(set) var state: State
   /// FILE size when known.
   public let size: Int64?
+  /// The file is ours (a pasted image written to a temp file): deleted once the upload leaves its list.
+  public let deletesFile: Bool
 
-  init(id: UUID = UUID(), taskID: String, source: Source, state: State = .queued, size: Int64? = nil) {
+  init(id: UUID = UUID(), taskID: String, source: Source, state: State = .queued, size: Int64? = nil, deletesFile: Bool = false) {
     self.id = id
     self.taskID = taskID
     self.source = source
     self.state = state
     self.size = size
+    self.deletesFile = deletesFile
+  }
+
+  /// Deletes the source file if this upload owns it.
+  func cleanUp() {
+    guard deletesFile, case .file(let url, _) = source else { return }
+    try? FileManager.default.removeItem(at: url)
   }
 
   /// The file name, or the link's title, else its URL.
@@ -44,10 +56,11 @@ public struct AttachmentUpload: Identifiable, Sendable, Hashable {
 
   public var isFinished: Bool { if case .finished = state { return true } else { return false } }
   public var isFailed: Bool { if case .failed = state { return true } else { return false } }
-  /// Queued or uploading.
+  public var isFinishing: Bool { state == .finishing }
+  /// Queued, uploading or finishing.
   public var isActive: Bool {
     switch state {
-    case .queued, .uploading: return true
+    case .queued, .uploading, .finishing: return true
     case .finished, .failed: return false
     }
   }
@@ -125,7 +138,8 @@ final class UploadRunner {
           defer { slots.release() }
           update(id, .uploading(TransferProgress(completed: 0, total: upload.size)))
           attachment = try await api.uploadAttachment(taskID: upload.taskID, file: url, fileName: name, draft: draft) { progress in
-            Task { @MainActor in update(id, .uploading(progress)) }
+            let sentAll = progress.total.map { progress.completed >= $0 } ?? false
+            Task { @MainActor in update(id, sentAll ? .finishing : .uploading(progress)) }
           }
         case .link(let url, let title):
           update(id, .uploading(TransferProgress(completed: 0, total: nil)))
@@ -146,9 +160,12 @@ final class UploadRunner {
     tasks.removeValue(forKey: id)?.cancel()
   }
 
-  func cancelAll() {
-    tasks.values.forEach { $0.cancel() }
-    tasks = [:]
+  /// Cancels every upload but `kept` (finishing ones, left to land).
+  func cancelAll(except kept: Set<UUID> = []) {
+    for (id, task) in tasks where !kept.contains(id) {
+      task.cancel()
+      tasks[id] = nil
+    }
   }
 
   var runningIDs: Set<UUID> { Set(tasks.keys) }
@@ -201,13 +218,13 @@ public final class AttachmentUploads {
   }
 
   /// Starts a task-level (non-draft) file upload. A file that fails the pre-check shows as failed at once.
-  func start(taskID: String, workspaceID: String, file url: URL, fileName: String?) {
+  func start(taskID: String, workspaceID: String, file url: URL, fileName: String?, deletesFile: Bool) {
     let name = fileName ?? url.lastPathComponent
     switch preflight(url) {
     case .failure(let error):
-      all.append(AttachmentUpload(taskID: taskID, source: .file(url, name: name), state: .failed(error)))
+      all.append(AttachmentUpload(taskID: taskID, source: .file(url, name: name), state: .failed(error), deletesFile: deletesFile))
     case .success(let size):
-      let upload = AttachmentUpload(taskID: taskID, source: .file(url, name: name), size: size)
+      let upload = AttachmentUpload(taskID: taskID, source: .file(url, name: name), size: size, deletesFile: deletesFile)
       all.append(upload)
       workspaces[upload.id] = workspaceID
       run(upload)
@@ -224,21 +241,28 @@ public final class AttachmentUploads {
     run(all[i])
   }
 
-  /// Cancels a queued or running upload, or dismisses a failed one.
-  public func cancel(_ id: UUID) {
-    runner.cancel(id)
-    all.removeAll { $0.id == id }
-    workspaces[id] = nil
+  /// Cancels a queued or uploading upload, or dismisses a failed one. Refused while finishing (it lands anyway).
+  @discardableResult
+  public func cancel(_ id: UUID) -> Bool {
+    guard let i = all.firstIndex(where: { $0.id == id }), !all[i].isFinishing else { return false }
+    drop(at: i)
+    return true
   }
 
+  /// Sign-out: everything stops, finishing ones too (their result has nowhere to go).
   func cancelAll() {
-    runner.cancelAll()
-    all = []
-    workspaces = [:]
+    while !all.isEmpty { drop(at: 0) }
   }
 
   func cancel(workspaceID: String) {
-    for upload in all where workspaces[upload.id] == workspaceID { cancel(upload.id) }
+    while let i = all.firstIndex(where: { workspaces[$0.id] == workspaceID }) { drop(at: i) }
+  }
+
+  private func drop(at i: Int) {
+    let upload = all.remove(at: i)
+    runner.cancel(upload.id)
+    workspaces[upload.id] = nil
+    upload.cleanUp()
   }
 
   private func run(_ upload: AttachmentUpload) {
@@ -251,11 +275,12 @@ public final class AttachmentUploads {
 
   private func update(_ id: UUID, _ state: AttachmentUpload.State) {
     guard let i = all.firstIndex(where: { $0.id == id }) else { return }
-    // A late progress report never overwrites the outcome.
-    if case .uploading = state, !all[i].isActive { return }
+    // A late progress report never overwrites the outcome, nor takes "finishing" back.
+    if case .uploading = state, !all[i].isActive || all[i].isFinishing { return }
     if case .finished(let attachment) = state {
-      all.remove(at: i)
+      let upload = all.remove(at: i)
       workspaces[id] = nil
+      upload.cleanUp()
       onFinished?(attachment)
       return
     }
@@ -280,9 +305,12 @@ public final class AttachmentFiles {
     self.cache = cache
   }
 
-  /// The local file (downloading or revalidating it first), or nil on failure (`lastError`) or cancellation.
-  public func file(for attachment: Attachment) async -> URL? {
+  /// The local file, or nil on failure (`lastError`) or cancellation. With `revalidate` (the default) a cached copy
+  /// costs one round trip (`If-None-Match`, 304); without it a cached copy comes back at once (Quick Look stepping)
+  /// and only a missing one is downloaded.
+  public func file(for attachment: Attachment, revalidate: Bool = true) async -> URL? {
     let id = attachment.id
+    if !revalidate, let cached = await cache.cachedFile(for: id) { return cached }
     downloads[id] = TransferProgress(completed: 0, total: attachment.size)
     defer { downloads[id] = nil }
     do {
@@ -297,6 +325,12 @@ public final class AttachmentFiles {
       recordFailure(error, lastError: &lastError)
       return nil
     }
+  }
+
+  /// Stops a download for every caller waiting on it (the viewer's Cancel); they get nil, without an error.
+  public func cancelDownload(_ attachmentID: String) {
+    downloads[attachmentID] = nil
+    Task { await cache.cancelDownload(attachmentID) }
   }
 
   /// The downloaded copy if there is one (Show in Finder).

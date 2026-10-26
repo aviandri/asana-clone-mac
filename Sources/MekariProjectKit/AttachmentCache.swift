@@ -7,10 +7,11 @@ import Darwin
 /// (SPEC-MAC §8). Files live at `<directory>/<attachmentId>/<sanitised name>`, are revalidated by ETag,
 /// and are evicted least recently used beyond `capacity`. `wipe()` on sign-out and on losing a workspace.
 public actor AttachmentCache {
-  /// `<Caches>/Attachments`: never stored outside Caches.
-  public static func defaultDirectory() -> URL {
+  /// `<Caches>/<bundle id>/Attachments`: never stored outside Caches. The app isn't sandboxed, so `<Caches>` is
+  /// the shared `~/Library/Caches`; the bundle-id folder keeps `wipe()` away from anyone else's files.
+  public static func defaultDirectory(bundleID: String = Bundle.main.bundleIdentifier ?? "com.mekari.project") -> URL {
     let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
-    return caches.appendingPathComponent("Attachments", isDirectory: true)
+    return caches.appendingPathComponent(bundleID, isDirectory: true).appendingPathComponent("Attachments", isDirectory: true)
   }
 
   struct Entry: Codable, Sendable {
@@ -141,6 +142,12 @@ public actor AttachmentCache {
     entries[id]?.lastUsed = now()
     saveIndex()
     return directory.appendingPathComponent(id, isDirectory: true).appendingPathComponent(entry.name)
+  }
+
+  /// Cancels the download of `attachmentID` for every caller (they get `CancellationError`).
+  public func cancelDownload(_ attachmentID: String) {
+    inFlight.removeValue(forKey: attachmentID)?.cancel()
+    cancelledWaiters[attachmentID] = nil
   }
 
   /// The downloaded copy, if any (Show in Finder is offered only then).

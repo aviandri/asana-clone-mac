@@ -24,7 +24,7 @@ final class FeaturesContractTests: XCTestCase {
   @MainActor
   func session(_ email: String) async throws -> AppSession {
     let session = AppSession(settings: InMemoryServerSettings(), tokens: InMemoryTokenStore(),
-                             apiFactory: { url, tokens in LiveMekariAPI(baseURL: url, tokens: tokens) })
+                             apiFactory: { url, tokens in LiveMekariAPI(baseURL: url, tokens: tokens) }, attachmentCache: .scratch())
     await session.signIn(server: server.absoluteString, email: email, password: "password123")
     XCTAssertNil(session.signInError)
     guard session.scope != nil else { throw XCTSkip("no workspace for \(email)") }
@@ -34,7 +34,7 @@ final class FeaturesContractTests: XCTestCase {
   @MainActor
   func testSignInErrorsAreMapped() async {
     let session = AppSession(settings: InMemoryServerSettings(), tokens: InMemoryTokenStore(),
-                             apiFactory: { url, tokens in LiveMekariAPI(baseURL: url, tokens: tokens) })
+                             apiFactory: { url, tokens in LiveMekariAPI(baseURL: url, tokens: tokens) }, attachmentCache: .scratch())
     await session.signIn(server: server.absoluteString, email: "alice@example.com", password: "wrong-password")
     XCTAssertEqual(session.signInError, .wrongCredentials)
     await session.signIn(server: "http://127.0.0.1:9", email: "alice@example.com", password: "password123")
