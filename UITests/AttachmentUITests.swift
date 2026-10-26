@@ -18,6 +18,19 @@ final class AttachmentUITests: XCTestCase {
         app.descendants(matching: .any)[identifier].firstMatch
     }
 
+    /// Every other element whose frame holds `element`'s centre, smallest first: what a failed isHittable hit.
+    private func covers(_ element: XCUIElement, in app: XCUIApplication) -> String {
+        let frame = element.frame
+        let centre = CGPoint(x: frame.midX, y: frame.midY)
+        let hits = app.windows.firstMatch.descendants(matching: .any).allElementsBoundByIndex.filter { other in
+            other.frame.contains(centre) && other.frame != frame
+        }
+        let described = hits.sorted { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }.prefix(6).map { e in
+            "\(e.elementType.rawValue) id='\(e.identifier)' label='\(e.label)' frame=\(e.frame)"
+        }
+        return "field \(frame); at its centre: " + described.joined(separator: " | ")
+    }
+
     private func waitForNonExistence(of element: XCUIElement, timeout: TimeInterval) -> Bool {
         let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
         return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
@@ -133,7 +146,7 @@ final class AttachmentUITests: XCTestCase {
 
         // A plain click: the ⌘V catcher once covered the composer ("not hittable" on macOS 15), so this also checks
         // that nothing sits over the field.
-        XCTAssertTrue(field.isHittable, "something covers the comment field")
+        XCTAssertTrue(field.isHittable, "something covers the comment field: \(covers(field, in: app))")
         field.click()
         app.typeKey("v", modifierFlags: .command)
         // The chip's container isn't an accessibility element of its own; its × button names the file.
@@ -150,7 +163,7 @@ final class AttachmentUITests: XCTestCase {
         let send = element(app, "composer.send")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: send)
         XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: 10), .completed, "Comment stayed disabled after the upload")
-        XCTAssertTrue(send.isHittable, "something covers the Comment button")
+        XCTAssertTrue(send.isHittable, "something covers the Comment button: \(covers(send, in: app))")
         send.click()
         XCTAssertTrue(waitForNonExistence(of: chip, timeout: 10), "the chip didn't go with the comment")
     }
