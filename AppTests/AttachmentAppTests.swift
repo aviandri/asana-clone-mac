@@ -151,7 +151,31 @@ final class AttachmentAppTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: existing), Data("pdf".utf8))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix(".") }, [], "staged copy left behind")
     }
+
+    func testAFailedSaveAsLeavesNoStagedCopyBehind() throws {
+        let dir = try temporaryDirectory()
+        let cached = dir.appendingPathComponent("cached.pdf")
+        try Data("pdf".utf8).write(to: cached)
+        // A locked file can't be replaced (Finder's "Locked", the user-immutable flag).
+        let locked = dir.appendingPathComponent("Locked.pdf")
+        try Data("mine".utf8).write(to: locked)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: locked.path)
+        addTeardownBlock { try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: locked.path) }
+
+        XCTAssertThrowsError(try AttachmentActions.copyOut(cached, to: locked))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasPrefix(".") }, [],
+                       "the hidden staged copy was left in the folder")
+        XCTAssertEqual(try Data(contentsOf: locked), Data("mine".utf8), "the locked file changed")
+    }
     #endif
+
+    @MainActor
+    func testDownloadErrorsAreForgottenWhenTheSessionChanges() {
+        let errors = AttachmentErrors()
+        errors.record(APIError(code: .internal, status: 500, message: "report-alice.pdf failed"), taskID: "t1")
+        errors.clearAll()
+        XCTAssertNil(errors.error(for: "t1"))
+    }
 
     // MARK: Paste and drop
 

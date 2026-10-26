@@ -67,6 +67,8 @@ final class SessionWiring {
             wiredScope = scopeObject
             wiredGeneration = inputs.generation
             router.scopeChanged(to: inputs.scope?.id)
+            // Sign-out, a switch or lost access: no download error naming another session's files stays.
+            AttachmentErrors.shared.clearAll()
             inputs.scope?.poller.onNew = { [notifier] notices in notifier.post(notices) }
             shownCelebration = inputs.celebrationID
         }

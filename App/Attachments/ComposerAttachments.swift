@@ -9,23 +9,38 @@ import SwiftUI
 @MainActor
 struct ComposerAttachmentsView: View {
     let composer: CommentComposer
+    /// About three rows of chips; more scroll, so Comment never leaves a short task window.
+    static let maxHeight: CGFloat = 84
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
         if !composer.attachments.isEmpty {
-            FlowLayout(spacing: 6) {
-                ForEach(composer.attachments) { chip in
-                    AttachmentChip(chip: chip, sending: composer.sendingIDs.contains(chip.id)) {
-                        Task { await composer.remove(chip.id) }
-                    } retry: {
-                        composer.retry(chip.id)
+            ScrollView(.vertical) {
+                FlowLayout(spacing: 6) {
+                    ForEach(composer.attachments) { chip in
+                        AttachmentChip(chip: chip, sending: composer.sendingIDs.contains(chip.id)) {
+                            Task { await composer.remove(chip.id) }
+                        } retry: {
+                            composer.retry(chip.id)
+                        }
                     }
                 }
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: ChipsHeightKey.self, value: proxy.size.height)
+                })
             }
+            .frame(height: min(max(contentHeight, 1), Self.maxHeight))
+            .onPreferenceChange(ChipsHeightKey.self) { contentHeight = $0 }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Comment attachments")
             .accessibilityIdentifier("composer.attachments")
         }
     }
+}
+
+private struct ChipsHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
 @MainActor

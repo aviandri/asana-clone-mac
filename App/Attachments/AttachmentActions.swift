@@ -127,6 +127,8 @@ struct AttachmentActions {
     nonisolated static func copyOut(_ file: URL, to destination: URL, fileManager: FileManager = .default) throws {
         if fileManager.fileExists(atPath: destination.path) {
             let staged = try stagedCopy(of: file, near: destination, fileManager: fileManager)
+            // A failed replace leaves the hidden staged copy in the user's folder: never keep it.
+            defer { if fileManager.fileExists(atPath: staged.path) { try? fileManager.removeItem(at: staged) } }
             _ = try fileManager.replaceItemAt(destination, withItemAt: staged, options: .usingNewMetadataOnly)
         } else {
             try fileManager.copyItem(at: file, to: destination)
@@ -185,6 +187,8 @@ enum OpenWithApps {
 
     @MainActor private static var cache: [String: [App]] = [:]
 
+    @MainActor static func clearCache() { cache = [:] }
+
     @MainActor
     static func cached(_ key: String, _ lookup: () -> [App]) -> [App] {
         if let apps = cache[key] { return apps }
@@ -231,6 +235,9 @@ final class AttachmentErrors {
     func error(for taskID: String) -> APIError? { byTask[taskID] }
 
     func clear(taskID: String) { byTask[taskID] = nil }
+
+    /// A new session or workspace: the messages may name the previous user's files.
+    func clearAll() { if !byTask.isEmpty { byTask = [:] } }
 
     func record(_ error: APIError, taskID: String) { byTask[taskID] = error }
 
