@@ -267,6 +267,45 @@ final class AttachmentStoreTests: XCTestCase {
   }
 
   @MainActor
+  func testDiscardDuringASendLeavesThePostedDraftsAlone() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("posted.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    await composer.discard()                          // the task window closes mid-send
+    let deletes = await calls(fake, .deleteAttachment)
+    XCTAssertEqual(deletes, 0, "a chip being posted isn't deleted")
+    await fake.release(.addComment, all: true)
+    await sending.value
+    guard case .comment(let comment)? = store.stories.last else { return XCTFail("no comment") }
+    XCTAssertEqual(comment.attachments.map(\.id), [draftID], "the comment kept its attachment")
+  }
+
+  @MainActor
+  func testDiscardDuringAFailedSendDeletesTheDraftsAfterwards() async throws {
+    let fake = demoFake()
+    let (_, store) = await openTask(fake)
+    let composer = store.composer
+    composer.attach(fileAt: try file("lost.txt"))
+    await waitUntil("uploaded") { composer.attachments.first?.isFinished == true }
+    let draftID = try XCTUnwrap(composer.attachments.first?.attachment?.id)
+    await fake.hold(.addComment)
+    let sending = Task { await composer.send() }
+    await waitUntil("send in flight") { await fake.parkedCount(.addComment) == 1 }
+    await composer.discard()
+    await fake.failNext(.addComment, with: .transport())
+    await fake.release(.addComment, all: true)
+    await sending.value
+    let left = await fake.currentAttachments().filter { $0.id == draftID }
+    XCTAssertEqual(left, [], "the send failed, so the discarded draft is deleted")
+  }
+
+  @MainActor
   func testTwentyChipsAtMostAndFailedOnesDontCount() async throws {
     let (_, store) = await openTask(demoFake())
     let composer = store.composer

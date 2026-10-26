@@ -413,6 +413,7 @@ public final class CommentComposer {
         draft = String(draft.dropFirst(sent.count)).trimmingCharacters(in: .whitespaces)
       }
       // Only what was posted (and what had failed by then) goes; chips added meanwhile wait for the next comment.
+      discardedWhileSending.subtract(sendingIDs)
       let gone = sendingIDs.union(failedAtSend)
       attachments.filter { gone.contains($0.id) }.forEach { $0.cleanUp() }
       attachments.removeAll { gone.contains($0.id) }
@@ -420,8 +421,15 @@ public final class CommentComposer {
       onSent?(comment)
     } catch {
       recordFailure(error, lastError: &lastError)
+      // Chips discarded while they were being posted: the comment didn't take them, so their drafts go now.
+      let orphaned = posted.filter { item in discardedWhileSending.contains(item.chip) }
+      discardedWhileSending.subtract(orphaned.map(\.chip))
+      for item in orphaned { try? await api.deleteAttachment(item.attachment) }
     }
   }
+
+  /// Chips discarded while being posted: deleted only if that send fails (a successful send keeps them).
+  @ObservationIgnored private var discardedWhileSending: Set<UUID> = []
 
   // MARK: Draft attachments
 
@@ -500,15 +508,18 @@ public final class CommentComposer {
     return true
   }
 
-  /// Removes every chip (the App calls this when the task is closed); finishing ones are deleted once they land.
-  /// Typed text stays.
+  /// Removes every chip (the App calls this when the task is closed); finishing ones are deleted once they land,
+  /// and chips being posted are left to the send (deleted only if it fails). Typed text stays.
   public func discard() async {
     let chips = attachments
     attachments = []
     runner.cancelAll(except: Set(chips.filter(\.isFinishing).map(\.id)))
     discardedWhileFinishing.formUnion(chips.filter(\.isFinishing).map(\.id))
+    discardedWhileSending.formUnion(chips.map(\.id).filter { sendingIDs.contains($0) })
     chips.forEach { $0.cleanUp() }
-    for draft in chips.compactMap(\.attachment) { try? await api.deleteAttachment(draft.id) }
+    for chip in chips where !sendingIDs.contains(chip.id) {
+      if let draft = chip.attachment { try? await api.deleteAttachment(draft.id) }
+    }
   }
 
   /// Stops uploads without deleting anything (the scope closed; the server sweeps the drafts).

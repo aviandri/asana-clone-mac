@@ -852,7 +852,8 @@ public var hasRoomForAnother: Bool { get }          // < 20 chips, not counting 
 public func retry(_ id: UUID)
 @discardableResult public func remove(_ id: UUID) async -> Bool   // cancels or DELETEs the draft; false while
                                                                   // finishing or being posted
-public func discard() async                         // removes every chip; finishing ones are deleted once they land
+public func discard() async                         // removes every chip; finishing ones are deleted once they land;
+                                                    // chips being posted are left to the send (deleted only if it fails)
 public var canSend: Bool { get }                    // text or ≥ 1 finished chip, nothing active, not sending;
                                                     // failed chips don't block
 // send() posts the finished chips' ids as attachmentIds; on success it drops those and the chips that had failed;
