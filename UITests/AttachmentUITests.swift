@@ -55,7 +55,8 @@ final class AttachmentUITests: XCTestCase {
         XCTAssertTrue(tile.waitForExistence(timeout: 5))
         tile.click()
         app.typeKey(" ", modifierFlags: [])
-        let panel = app.windows.matching(NSPredicate(format: "title CONTAINS 'login-redirect'")).firstMatch
+        // The panel's window is titled "Quick Look" (the file name is inside it).
+        let panel = app.windows["Quick Look"].firstMatch
         XCTAssertTrue(panel.waitForExistence(timeout: 10), "Quick Look didn't open: \(app.windows.debugDescription)")
         app.typeKey(" ", modifierFlags: [])
         XCTAssertTrue(waitForNonExistence(of: panel, timeout: 5), "Space didn't close Quick Look")
@@ -123,8 +124,9 @@ final class AttachmentUITests: XCTestCase {
 
         field.click()
         app.typeKey("v", modifierFlags: .command)
-        let chip = element(app, "composer.chip")
-        XCTAssertTrue(chip.waitForExistence(timeout: 5), "no chip after ⌘V: \(element(app, "task.inspector").debugDescription)")
+        // The chip's container isn't an accessibility element of its own; its × button names the file.
+        let chip = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Remove Pasted image '")).firstMatch
+        XCTAssertTrue(chip.waitForExistence(timeout: 10), "no finished chip after ⌘V: \(element(app, "task.inspector").debugDescription)")
         let send = element(app, "composer.send")
         let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isEnabled == true"), object: send)
         XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: 10), .completed, "Comment stayed disabled after the upload")
